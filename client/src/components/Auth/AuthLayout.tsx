@@ -3,6 +3,7 @@ import { TStartupConfig } from 'librechat-data-provider';
 import { ErrorMessage } from '~/components/Auth/ErrorMessage';
 import { TranslationKeys, useLocalize } from '~/hooks';
 import SocialLoginRender from './SocialLoginRender';
+import NetworkBackground from './NetworkBackground';
 import { BlinkAnimation } from './BlinkAnimation';
 import { Banner } from '../Banners';
 import Footer from './Footer';
@@ -58,9 +59,12 @@ function AuthLayout({
 
   return (
     <div className="relative flex min-h-screen flex-col bg-white dark:bg-gray-900">
-      <Banner />
+      <NetworkBackground />
+      <div className="relative z-10">
+        <Banner />
+      </div>
       <BlinkAnimation active={isFetching}>
-        <div className="mt-6 h-10 w-full bg-cover">
+        <div className="relative z-10 mt-6 h-10 w-full bg-cover">
           <img
             src="assets/logo.svg"
             className="h-full w-full object-contain"
@@ -68,12 +72,14 @@ function AuthLayout({
           />
         </div>
       </BlinkAnimation>
-      <DisplayError />
-      <div className="absolute bottom-0 left-0 md:m-4">
+      <div className="relative z-10">
+        <DisplayError />
+      </div>
+      <div className="absolute bottom-0 left-0 z-10 md:m-4">
         <ThemeSelector />
       </div>
 
-      <main className="flex flex-grow items-center justify-center">
+      <main className="relative z-10 flex flex-grow items-center justify-center">
         <div className="w-authPageWidth overflow-hidden bg-white px-6 py-4 dark:bg-gray-900 sm:max-w-md sm:rounded-lg">
           {!hasStartupConfigError && !isFetching && header && (
             <h1
@@ -90,7 +96,9 @@ function AuthLayout({
             )}
         </div>
       </main>
-      <Footer startupConfig={startupConfig} />
+      <div className="relative z-10">
+        <Footer startupConfig={startupConfig} />
+      </div>
     </div>
   );
 }
