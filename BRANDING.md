@@ -11,8 +11,6 @@ Brand palette: **purple** `#9A278E` (identity, from the Synapse logo) +
 
 ## New files (zero merge risk)
 
-- `client/src/bdren-theme.css` — CSS-variable brand overrides (`--brand-purple`,
-  `--surface-submit`, `--surface-submit-hover`), imported at the end of `style.css`.
 - `client/src/components/Auth/NetworkBackground.tsx` — animated network-graph
   canvas + watermark shown behind login/registration.
 - `client/public/assets/synapse-icon.svg` — icon-only mark used as the login
@@ -34,7 +32,7 @@ future `modelSpecs` entry — see `services-and-config-guide.md`).
 | `client/index.html` | `<title>`, meta description, `theme-color` (→ purple) |
 | `client/vite.config.ts` | PWA manifest `name`/`short_name`/`theme_color`/`background_color` |
 | `client/tailwind.config.cjs` | `green` color scale hex values → orange ramp (this scale backs every direct `text-green-*`/`hover:text-green-700`-style utility class in the app, e.g. auth page links) |
-| `client/src/style.css` | one `@import './bdren-theme.css';` line at the end |
+| `client/src/style.css` | `--brand-purple`, `--surface-submit`, `--surface-submit-hover` hex values changed directly in the `:root`/`html`/`.dark` blocks (see note below on why this replaced a separate overlay file) |
 | `client/src/components/Auth/AuthLayout.tsx` | mounts `<NetworkBackground />`; wrapped `Banner`/`DisplayError`/`Footer`/logo/`ThemeSelector`/`main` in `relative z-10` so they stack above the new background layer |
 | `client/src/locales/en/translation.json` | `com_ui_latest_footer`, `com_agents_mcp_trust_subtext`, `com_ui_api_keys_description`, `com_a11y_logo_alt` (admin panel only — n/a here) |
 | `client/src/components/Chat/Footer.tsx` | default-footer fallback text + link (only renders if `CUSTOM_FOOTER` env is unset) |
@@ -54,6 +52,20 @@ future `modelSpecs` entry — see `services-and-config-guide.md`).
   double-fallback default, never shown in practice.
 - `AdminSettingsDialog.tsx` docs link — points at real LibreChat documentation,
   left as a genuinely useful reference.
+
+## Why direct edits instead of an overlay CSS file
+
+The original plan used a separate `bdren-theme.css` imported via one
+`@import` line appended at the end of `style.css` (the classic "config
+overlay" trick). Testing in the actual dev server showed Vite's CSS
+dev-transform silently drops an `@import` that isn't the first rule in the
+file (unlike a full production Rollup/postcss-import build, which would have
+inlined it) — the override never took effect and the submit button stayed
+green. Rather than ship something that only works in one build mode, the
+three variables were edited directly in `style.css`'s existing `:root`/`html`/
+`.dark` blocks (the same approach already used for the Tailwind `green`
+scale, which was verified working). Slightly more upstream-file surface, but
+correct in both dev and production.
 
 ## Login/registration network background
 
