@@ -129,6 +129,13 @@ export interface UsageMetadata {
     reasoning?: number;
     audio?: number;
   };
+  /** Run identifier for the producing agent/graph invocation. Combined with
+   *  `seq` it makes the usage ledger's idempotency key unique per model call
+   *  within a message (P1-3). */
+  runId?: string;
+  /** Zero-based sequence of this usage entry within a single run, so repeated
+   *  model calls in one message produce distinct idempotency keys. */
+  seq?: number;
 }
 
 /**

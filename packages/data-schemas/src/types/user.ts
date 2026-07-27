@@ -1,6 +1,6 @@
 import type { RefillIntervalUnit, TUserFavorite } from 'librechat-data-provider';
 import type { Document, Types } from 'mongoose';
-import { CursorPaginationParams } from '~/common';
+import { CursorPaginationParams, InstitutionMembershipStatus } from '~/common';
 
 export interface IUser extends Document {
   _id: Types.ObjectId;
@@ -59,6 +59,11 @@ export interface IUser extends Document {
   /** Field for external source identification (for consistency with TPrincipal schema) */
   idOnTheSource?: string;
   tenantId?: string;
+  membershipStatus?: InstitutionMembershipStatus;
+  suspendedAt?: Date | null;
+  suspendedBy?: string | Types.ObjectId | null;
+  removedAt?: Date | null;
+  removedBy?: string | Types.ObjectId | null;
   federatedTokens?: OIDCTokens;
   openidTokens?: OIDCTokens;
 }

@@ -25,6 +25,9 @@ let createTransaction: ReturnType<typeof createTransactionMethods>['createTransa
 let createStructuredTransaction: ReturnType<
   typeof createTransactionMethods
 >['createStructuredTransaction'];
+let reportDuplicateRequestKeys: ReturnType<
+  typeof createTransactionMethods
+>['reportDuplicateRequestKeys'];
 let getMultiplier: ReturnType<typeof createTxMethods>['getMultiplier'];
 let getCacheMultiplier: ReturnType<typeof createTxMethods>['getCacheMultiplier'];
 
@@ -50,6 +53,7 @@ beforeAll(async () => {
   });
   createTransaction = transactionMethods.createTransaction;
   createStructuredTransaction = transactionMethods.createStructuredTransaction;
+  reportDuplicateRequestKeys = transactionMethods.reportDuplicateRequestKeys;
 
   const spendMethods = createSpendTokensMethods(mongoose, {
     createTransaction: transactionMethods.createTransaction,
@@ -1079,5 +1083,149 @@ describe('Premium Token Pricing Integration Tests', () => {
 
     const updatedBalance = await Balance.findOne({ user: userId });
     expect(updatedBalance?.tokenCredits).toBeCloseTo(initialBalance - expectedCost, 0);
+  });
+});
+
+describe('P1-3: idempotent usage ledger', () => {
+  const model = 'gpt-3.5-turbo';
+
+  beforeEach(async () => {
+    // The outer beforeEach drops the database (and its indexes); rebuild the
+    // ledger indexes so the idempotency constraint is enforced in these tests.
+    await Transaction.syncIndexes();
+  });
+
+  test('replaying a keyed usage write records exactly one row and charges once', async () => {
+    const userId = new mongoose.Types.ObjectId();
+    const initialBalance = 10000000;
+    await Balance.create({ user: userId, tokenCredits: initialBalance });
+
+    const txData: TxData = {
+      user: userId,
+      tenantId: 'tenant-a',
+      conversationId: 'convo-1',
+      messageId: 'message-1',
+      model,
+      tokenType: 'completion',
+      rawAmount: -1000,
+      context: 'message',
+      balance: { enabled: true },
+    };
+
+    const first = await createTransaction(txData);
+    const balanceAfterFirst = (await Balance.findOne({ user: userId }))?.tokenCredits ?? 0;
+
+    const second = await createTransaction({ ...txData });
+    const balanceAfterSecond = (await Balance.findOne({ user: userId }))?.tokenCredits ?? 0;
+
+    const rows = await Transaction.find({ user: userId }).lean();
+    expect(rows).toHaveLength(1);
+    expect(rows[0].tenantId).toBe('tenant-a');
+    expect(rows[0].requestKey).toBeTruthy();
+
+    expect(balanceAfterFirst).toBeLessThan(initialBalance);
+    // The replay must not move the balance again.
+    expect(balanceAfterSecond).toBe(balanceAfterFirst);
+    expect(first?.completion).toBeLessThan(0);
+    expect(second?.completion).toBe(0);
+  });
+
+  test('prompt and completion for the same request remain distinct rows', async () => {
+    const userId = new mongoose.Types.ObjectId();
+    await Balance.create({ user: userId, tokenCredits: 10000000 });
+
+    const base: TxData = {
+      user: userId,
+      tenantId: 'tenant-a',
+      conversationId: 'convo-2',
+      messageId: 'message-2',
+      model,
+      context: 'message',
+      balance: { enabled: true },
+    };
+
+    await createTransaction({ ...base, tokenType: 'prompt', rawAmount: -500 });
+    await createTransaction({ ...base, tokenType: 'completion', rawAmount: -1500 });
+
+    const rows = await Transaction.find({ user: userId }).lean();
+    expect(rows).toHaveLength(2);
+    expect(rows.map((r) => r.tokenType).sort()).toEqual(['completion', 'prompt']);
+  });
+
+  test('tenant usage without a stable request key fails closed', async () => {
+    const userId = new mongoose.Types.ObjectId();
+    await Balance.create({ user: userId, tokenCredits: 10000000 });
+
+    const base: TxData = {
+      user: userId,
+      tenantId: 'tenant-a',
+      conversationId: 'convo-3',
+      model,
+      tokenType: 'completion',
+      rawAmount: -100,
+      context: 'message',
+      balance: { enabled: true },
+    };
+
+    await expect(createTransaction({ ...base })).rejects.toThrow(/requestKey/);
+
+    const rows = await Transaction.find({ user: userId }).lean();
+    expect(rows).toHaveLength(0);
+  });
+
+  test('tenant usage is recorded even when transactions.enabled is false', async () => {
+    const userId = new mongoose.Types.ObjectId();
+    await createTransaction({
+      user: userId,
+      tenantId: 'tenant-a',
+      conversationId: 'convo-mandatory',
+      messageId: 'message-mandatory',
+      model,
+      providerKey: 'openai',
+      tokenType: 'completion',
+      rawAmount: -100,
+      context: 'message',
+      balance: { enabled: false },
+      transactions: { enabled: false },
+    });
+
+    expect(await Transaction.countDocuments({ user: userId })).toBe(1);
+  });
+
+  test('reportDuplicateRequestKeys surfaces pre-existing duplicate keys', async () => {
+    // Remove the unique index so historical duplicates can be planted.
+    await Transaction.collection.dropIndex('transaction_idempotency_key').catch(() => {});
+
+    const userId = new mongoose.Types.ObjectId();
+    const dup = {
+      user: userId,
+      tenantId: 'tenant-a',
+      requestKey: 'convo-x:message-x:message:openai:gpt-3.5-turbo',
+      tokenType: 'completion',
+      rawAmount: -100,
+    };
+    await Transaction.collection.insertMany([
+      { ...dup },
+      { ...dup },
+      {
+        user: userId,
+        tenantId: 'tenant-a',
+        requestKey: 'unique-key',
+        tokenType: 'completion',
+        rawAmount: -100,
+      },
+    ]);
+
+    const duplicates = await reportDuplicateRequestKeys({ tenantId: 'tenant-a' });
+    expect(duplicates).toHaveLength(1);
+    expect(duplicates[0]).toEqual(
+      expect.objectContaining({
+        tenantId: 'tenant-a',
+        requestKey: 'convo-x:message-x:message:openai:gpt-3.5-turbo',
+        tokenType: 'completion',
+        count: 2,
+      }),
+    );
+    expect(duplicates[0].ids).toHaveLength(2);
   });
 });

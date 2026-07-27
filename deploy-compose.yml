@@ -9,8 +9,10 @@ services:
     ports:
       - 3080:3080
     depends_on:
-      - mongodb
-      - rag_api
+      mongodb-init:
+        condition: service_completed_successfully
+      rag_api:
+        condition: service_started
     restart: always
     extra_hosts:
     - "host.docker.internal:host-gateway"
@@ -19,7 +21,7 @@ services:
     environment:
       - HOST=0.0.0.0
       - NODE_ENV=production
-      - MONGO_URI=mongodb://mongodb:27017/LibreChat
+      - MONGO_URI=mongodb://mongodb:27017/LibreChat?replicaSet=rs0
       - MEILI_HOST=http://meilisearch:7700
       - RAG_PORT=${RAG_PORT:-8000}
       - RAG_API_URL=http://rag_api:${RAG_PORT:-8000}
@@ -75,7 +77,24 @@ services:
     restart: always
     volumes:
       - ./data-node:/data/db
-    command: mongod --noauth
+    command: mongod --noauth --replSet rs0 --bind_ip_all
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping').ok"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+  mongodb-init:
+    image: mongo:8.0.20
+    restart: "no"
+    depends_on:
+      mongodb:
+        condition: service_healthy
+    command:
+      - mongosh
+      - mongodb://mongodb:27017/admin
+      - --quiet
+      - --eval
+      - "try { rs.status().ok } catch (error) { rs.initiate({_id:'rs0',members:[{_id:0,host:'mongodb:27017'}]}).ok }"
   meilisearch:
     container_name: chat-meilisearch
     image: getmeili/meilisearch:v1.35.1

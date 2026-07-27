@@ -817,7 +817,7 @@ const createResponse = async (req, res) => {
       // Record token usage against balance
       const balanceConfig = getBalanceConfig(appConfig);
       const transactionsConfig = getTransactionsConfig(appConfig);
-      recordCollectedUsage(
+      await recordCollectedUsage(
         {
           spendTokens: db.spendTokens,
           spendStructuredTokens: db.spendStructuredTokens,
@@ -826,6 +826,7 @@ const createResponse = async (req, res) => {
         },
         {
           user: userId,
+          tenantId: req.user?.tenantId,
           conversationId,
           collectedUsage,
           context: 'message',
@@ -834,9 +835,7 @@ const createResponse = async (req, res) => {
           transactions: transactionsConfig,
           model: primaryConfig.model || agent.model_parameters?.model,
         },
-      ).catch((err) => {
-        logger.error('[Responses API] Error recording usage:', err);
-      });
+      );
 
       // Finalize the stream
       finalizeStream();
@@ -994,7 +993,7 @@ const createResponse = async (req, res) => {
       // Record token usage against balance
       const balanceConfig = getBalanceConfig(appConfig);
       const transactionsConfig = getTransactionsConfig(appConfig);
-      recordCollectedUsage(
+      await recordCollectedUsage(
         {
           spendTokens: db.spendTokens,
           spendStructuredTokens: db.spendStructuredTokens,
@@ -1003,6 +1002,7 @@ const createResponse = async (req, res) => {
         },
         {
           user: userId,
+          tenantId: req.user?.tenantId,
           conversationId,
           collectedUsage,
           context: 'message',
@@ -1011,9 +1011,7 @@ const createResponse = async (req, res) => {
           transactions: transactionsConfig,
           model: primaryConfig.model || agent.model_parameters?.model,
         },
-      ).catch((err) => {
-        logger.error('[Responses API] Error recording usage:', err);
-      });
+      );
 
       if (artifactPromises.length > 0) {
         try {

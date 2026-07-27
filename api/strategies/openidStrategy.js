@@ -3,7 +3,12 @@ const { get } = require('lodash');
 const passport = require('passport');
 const client = require('openid-client');
 const jwtDecode = require('jsonwebtoken/decode');
-const { hashToken, logger, tenantStorage } = require('@librechat/data-schemas');
+const {
+  hashToken,
+  logger,
+  tenantStorage,
+  INSTITUTION_ADMIN_ROLE,
+} = require('@librechat/data-schemas');
 const { Strategy: OpenIDStrategy } = require('openid-client/passport');
 const { CacheKeys, ErrorTypes, SystemRoles } = require('librechat-data-provider');
 const {
@@ -29,6 +34,11 @@ const { resizeAvatar } = require('~/server/services/Files/images/avatar');
 const { findUser, createUser, updateUser, findRolesByNames } = require('~/models');
 const { getAppConfig } = require('~/server/services/Config');
 const getLogStores = require('~/cache/getLogStores');
+const { ensureInstitutionAdminRole } = require('~/server/services/tenancy');
+const {
+  activateProvisionedMember,
+  InstitutionMembershipStatuses,
+} = require('~/server/services/institutionMembers');
 
 /**
  * @typedef {import('openid-client').ClientMetadata} ClientMetadata
@@ -500,9 +510,9 @@ async function applyOpenIdRoleSync({
     return;
   }
 
-  if (user.role === SystemRoles.ADMIN) {
+  if (user.role === SystemRoles.ADMIN || user.role === INSTITUTION_ADMIN_ROLE) {
     logger.info(
-      `[openidStrategy] OpenID role sync skipped for ${username}; existing ADMIN role is not managed by generic role sync`,
+      `[openidStrategy] OpenID role sync skipped for ${username}; existing elevated admin role is not managed by generic role sync`,
     );
     return;
   }
@@ -683,21 +693,33 @@ async function processOpenIDAuth(tokenset, existingUsersOnly = false) {
     throw new Error('User does not exist');
   }
 
-  if (!user) {
-    user = {
-      provider: 'openid',
-      openidId: userinfo.sub,
+    if (!user) {
+      user = {
+        provider: 'openid',
+        openidId: userinfo.sub,
       username,
       email: email || '',
-      emailVerified: userinfo.email_verified || false,
-      name: fullName,
-      idOnTheSource: userinfo.oid,
-      openidIssuer,
-    };
+        emailVerified: userinfo.email_verified || false,
+        name: fullName,
+        idOnTheSource: userinfo.oid,
+        openidIssuer,
+        ...(userinfo.tenantId
+          ? {
+              tenantId: userinfo.tenantId,
+              membershipStatus: InstitutionMembershipStatuses.SUSPENDED,
+            }
+          : null),
+      };
 
-    const balanceConfig = getBalanceConfig(appConfig);
-    user = await createUser(user, balanceConfig, true, true);
-  } else {
+      const balanceConfig = getBalanceConfig(appConfig);
+      user = await createUser(user, balanceConfig, true, true);
+      if (user.tenantId) {
+        user = await activateProvisionedMember({
+          userId: user._id.toString(),
+          tenantId: user.tenantId,
+        });
+      }
+    } else {
     user.provider = 'openid';
     user.openidId = userinfo.sub;
     if (openidIssuer) {
@@ -747,13 +769,22 @@ async function processOpenIDAuth(tokenset, existingUsersOnly = false) {
     }
 
     if (adminRoles && (adminRoles === true || adminRoleValues.includes(adminRole))) {
-      user.role = SystemRoles.ADMIN;
+      if (user.tenantId) {
+        await ensureInstitutionAdminRole(user.tenantId);
+      } else {
+        logger.warn(
+          `[openidStrategy] OPENID_ADMIN_ROLE matched for ${username}, but no tenantId is set; assigning ${INSTITUTION_ADMIN_ROLE} without tenant role seeding`,
+        );
+      }
+      user.role = INSTITUTION_ADMIN_ROLE;
       adminRoleGranted = true;
-      logger.info(`[openidStrategy] User ${username} is an admin based on role: ${adminRole}`);
-    } else if (user.role === SystemRoles.ADMIN) {
+      logger.info(
+        `[openidStrategy] User ${username} is an institution admin based on role: ${adminRole}`,
+      );
+    } else if (user.role === INSTITUTION_ADMIN_ROLE) {
       user.role = SystemRoles.USER;
       logger.info(
-        `[openidStrategy] User ${username} demoted from admin - role no longer present in token`,
+        `[openidStrategy] User ${username} demoted from institution admin - role no longer present in token`,
       );
     }
   }
@@ -820,6 +851,12 @@ async function processOpenIDAuth(tokenset, existingUsersOnly = false) {
   }
 
   user = await updateUser(user._id, user);
+  if (user?.tenantId && user.membershipStatus !== InstitutionMembershipStatuses.ACTIVE) {
+    user = await activateProvisionedMember({
+      userId: user._id.toString(),
+      tenantId: user.tenantId,
+    });
+  }
 
   logger.info(
     `[openidStrategy] login success openidId: ${user.openidId} | email: ${user.email} | username: ${user.username} `,

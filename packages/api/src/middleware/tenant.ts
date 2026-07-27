@@ -4,6 +4,7 @@ import { tenantStorage, logger, SYSTEM_TENANT_ID } from '@librechat/data-schemas
 import type { TenantContext } from '@librechat/data-schemas';
 import type { Response, NextFunction } from 'express';
 import type { ServerRequest } from '~/types/http';
+import { validateActiveInstitution } from './institution';
 
 type ContextUser = {
   tenantId?: string;
@@ -144,7 +145,21 @@ export function tenantContextMiddleware(
     return;
   }
 
-  runWithTenantContext(context, next);
+  void validateActiveInstitution(tenantId)
+    .then((result) => {
+      if (!result.ok) {
+        res
+          .status(result.statusCode === 404 ? 403 : result.statusCode)
+          .json({ error: result.message });
+        return;
+      }
+
+      runWithTenantContext(context, next);
+    })
+    .catch((error) => {
+      logger.error('[tenantContextMiddleware] Institution validation failed', error);
+      res.status(503).json({ error: 'Institution validation failed' });
+    });
 }
 
 export type RequestTenantSource = {
@@ -263,15 +278,36 @@ export function restoreTenantContextFromReq(
     return rejectRequestWithUploadCleanup(req, res, SYSTEM_TENANT_REJECTION_MESSAGE);
   }
 
-  const currentContext = tenantStorage.getStore();
-  if (
-    currentContext?.tenantId === context.tenantId &&
-    currentContext?.userId === context.userId &&
-    currentContext?.requestId === context.requestId
-  ) {
-    next();
-    return;
-  }
+  return validateActiveInstitution(resolvedTenantId)
+    .then((result) => {
+      if (!result.ok) {
+        return rejectRequestWithUploadCleanupInContext(
+          context,
+          req,
+          res,
+          result.message,
+        );
+      }
 
-  return runWithTenantContext(context, next);
+      const currentContext = tenantStorage.getStore();
+      if (
+        currentContext?.tenantId === context.tenantId &&
+        currentContext?.userId === context.userId &&
+        currentContext?.requestId === context.requestId
+      ) {
+        next();
+        return;
+      }
+
+      return runWithTenantContext(context, next);
+    })
+    .catch((error) => {
+      logger.error('[restoreTenantContextFromReq] Institution validation failed', error);
+      return rejectRequestWithUploadCleanupInContext(
+        context,
+        req,
+        res,
+        'Institution validation failed',
+      );
+    });
 }

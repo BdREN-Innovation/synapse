@@ -26,14 +26,22 @@ import { createPresetModel } from './preset';
 import { createPromptModel } from './prompt';
 import { createMemoryModel } from './memory';
 import { createConfigModel } from './config';
+import { createInstitutionImportJobModel } from './institutionImportJob';
 import { createTokenModel } from './token';
 import { createAgentModel } from './agent';
+import { createInstitutionInviteModel } from './institutionInvite';
 import { createSkillModel } from './skill';
 import { createGroupModel } from './group';
+import { createInstitutionModel } from './institution';
+import { createPlatformAdminModel } from './platformAdmin';
 import { createUserModel } from './user';
 import { createRoleModel } from './role';
 import { createFileModel } from './file';
 import { createKeyModel } from './key';
+import { createUsagePolicyModel } from './usagePolicy';
+import { createUsageBucketModel } from './usageBucket';
+import { createUsageReservationModel } from './usageReservation';
+import { createUsageWarningModel } from './usageWarning';
 
 /**
  * Creates all database models for all collections
@@ -75,6 +83,14 @@ export function createModels(mongoose: typeof import('mongoose')): {
   AuditLog: ReturnType<typeof createAuditLogModel>;
   Group: ReturnType<typeof createGroupModel>;
   Config: ReturnType<typeof createConfigModel>;
+  Institution: ReturnType<typeof createInstitutionModel>;
+  InstitutionImportJob: ReturnType<typeof createInstitutionImportJobModel>;
+  InstitutionInvite: ReturnType<typeof createInstitutionInviteModel>;
+  PlatformAdmin: ReturnType<typeof createPlatformAdminModel>;
+  UsagePolicy: ReturnType<typeof createUsagePolicyModel>;
+  UsageBucket: ReturnType<typeof createUsageBucketModel>;
+  UsageReservation: ReturnType<typeof createUsageReservationModel>;
+  UsageWarning: ReturnType<typeof createUsageWarningModel>;
 } {
   return {
     User: createUserModel(mongoose),
@@ -113,5 +129,13 @@ export function createModels(mongoose: typeof import('mongoose')): {
     AuditLog: createAuditLogModel(mongoose),
     Group: createGroupModel(mongoose),
     Config: createConfigModel(mongoose),
+    Institution: createInstitutionModel(mongoose),
+    InstitutionImportJob: createInstitutionImportJobModel(mongoose),
+    InstitutionInvite: createInstitutionInviteModel(mongoose),
+    PlatformAdmin: createPlatformAdminModel(mongoose),
+    UsagePolicy: createUsagePolicyModel(mongoose),
+    UsageBucket: createUsageBucketModel(mongoose),
+    UsageReservation: createUsageReservationModel(mongoose),
+    UsageWarning: createUsageWarningModel(mongoose),
   };
 }

@@ -9,11 +9,18 @@ const methods = createMethods(mongoose, {
   getCache: getLogStores,
 });
 
+const parsePlatformSuperadminEmails = () =>
+  (process.env.PLATFORM_SUPERADMIN_EMAILS || '')
+    .split(',')
+    .map((email) => email.trim().toLowerCase())
+    .filter(Boolean);
+
 const seedDatabase = async () => {
   await methods.initializeRoles();
   await methods.seedDefaultRoles();
   await methods.ensureDefaultCategories();
   await methods.seedSystemGrants();
+  await methods.seedPlatformSuperadmins(parsePlatformSuperadminEmails());
 };
 
 module.exports = {

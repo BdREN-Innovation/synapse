@@ -26,8 +26,16 @@ export interface PricingFns {
 
 interface BaseTxData {
   user: string;
+  tenantId?: string;
+  requireTenant?: boolean;
   model?: string;
+  modelKey?: string;
+  providerKey?: string;
+  providerModelId?: string;
   context: string;
+  usageKind?: string;
+  usageUnit?: 'tokens' | 'images' | 'seconds' | 'operations';
+  requestKey?: string;
   messageId?: string;
   conversationId: string;
   endpointTokenConfig?: EndpointTokenConfig;
@@ -75,8 +83,16 @@ export interface StructuredTokenUsage {
 
 export interface TxMetadata {
   user: string;
+  tenantId?: string;
+  requireTenant?: boolean;
   model?: string;
+  modelKey?: string;
+  providerKey?: string;
+  providerModelId?: string;
   context: string;
+  usageKind?: string;
+  usageUnit?: 'tokens' | 'images' | 'seconds' | 'operations';
+  requestKey?: string;
   messageId?: string;
   conversationId: string;
   balance?: Partial<TCustomConfig['balance']> | null;
@@ -85,7 +101,7 @@ export interface TxMetadata {
 }
 
 export interface BulkWriteDeps {
-  insertMany: (docs: TransactionData[]) => Promise<unknown>;
+  insertMany: (docs: TransactionData[]) => Promise<{ insertedIndexes: number[] } | unknown>;
   updateBalance: (params: { user: string; incrementValue: number }) => Promise<unknown>;
 }
 
@@ -186,7 +202,10 @@ function prepareStandardTx(
   if (txData.rawAmount != null && isNaN(txData.rawAmount)) {
     return null;
   }
-  if (transactions?.enabled === false) {
+  /** Tenant usage is the authoritative SaaS ledger. The legacy
+   * `transactions.enabled` switch may disable personal balance history, but
+   * it must never make an attributable tenant model call disappear. */
+  if (transactions?.enabled === false && !txData.tenantId) {
     return null;
   }
 
@@ -206,7 +225,7 @@ function prepareStructuredTx(
   pricing: PricingFns,
 ): PreparedEntry | null {
   const { balance, transactions, ...txData } = _txData;
-  if (transactions?.enabled === false) {
+  if (transactions?.enabled === false && !txData.tenantId) {
     return null;
   }
 
@@ -329,19 +348,44 @@ export async function bulkWriteTransactions(
     return;
   }
 
-  let totalTokenValue = 0;
-  let balanceEnabled = false;
-  const plainDocs = docs.map(({ doc, tokenValue, balance }) => {
-    if (balance?.enabled) {
-      balanceEnabled = true;
-      totalTokenValue += tokenValue;
+  const plainDocs = docs.map(({ doc }) => {
+    if (doc.tenantId) {
+      const missing = [
+        !doc.user && 'user',
+        !doc.providerKey && 'providerKey',
+        !doc.modelKey && 'modelKey',
+        !doc.requestKey && 'requestKey',
+      ].filter(Boolean);
+      if (missing.length > 0) {
+        throw new Error(
+          `[Transaction] Billable tenant usage is missing required metadata: ${missing.join(', ')}`,
+        );
+      }
     }
     return doc;
+  });
+
+  const insertResult = (await dbOps.insertMany(plainDocs)) as
+    | { insertedIndexes?: number[] }
+    | undefined;
+  const insertedIndexes = Array.isArray(insertResult?.insertedIndexes)
+    ? new Set(insertResult.insertedIndexes)
+    : null;
+
+  let totalTokenValue = 0;
+  let balanceEnabled = false;
+  docs.forEach(({ tokenValue, balance }, index) => {
+    if (!balance?.enabled) {
+      return;
+    }
+    if (insertedIndexes && !insertedIndexes.has(index)) {
+      return;
+    }
+    balanceEnabled = true;
+    totalTokenValue += tokenValue;
   });
 
   if (balanceEnabled) {
     await dbOps.updateBalance({ user, incrementValue: totalTokenValue });
   }
-
-  await dbOps.insertMany(plainDocs);
 }

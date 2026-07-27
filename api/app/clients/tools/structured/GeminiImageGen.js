@@ -263,7 +263,7 @@ async function recordTokenUsage({ usageMetadata, req, userId, conversationId, mo
   const transactions = getTransactionsConfig(appConfig);
 
   // Skip if neither balance nor transactions are enabled
-  if (!balance?.enabled && transactions?.enabled === false) {
+  if (!req.user?.tenantId && !balance?.enabled && transactions?.enabled === false) {
     return;
   }
 
@@ -283,25 +283,25 @@ async function recordTokenUsage({ usageMetadata, req, userId, conversationId, mo
     conversationId,
   });
 
-  try {
-    await spendTokens(
-      {
-        user: userId,
-        model,
-        messageId,
-        conversationId,
-        context: 'image_generation',
-        balance,
-        transactions,
-      },
-      {
-        promptTokens,
-        completionTokens,
-      },
-    );
-  } catch (error) {
-    logger.error('[GeminiImageGen] Error recording token usage:', error);
-  }
+  await spendTokens(
+    {
+      user: userId,
+      tenantId: req.user?.tenantId,
+      requireTenant: Boolean(req.user?.tenantId),
+      providerKey: 'google',
+      model,
+      messageId,
+      requestKey: `${conversationId}:${messageId}:image_generation`,
+      conversationId,
+      context: 'image_generation',
+      balance,
+      transactions,
+    },
+    {
+      promptTokens,
+      completionTokens,
+    },
+  );
 }
 
 /**

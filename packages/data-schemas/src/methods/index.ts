@@ -95,6 +95,8 @@ import type {
 import { createAgentMethods, type AgentMethods, type AgentDeps } from './agent';
 /* Config */
 import { createConfigMethods, type ConfigMethods } from './config';
+import { createInstitutionMethods, type InstitutionMethods } from './institution';
+import { createPlatformAdminMethods, type PlatformAdminMethods } from './platformAdmin';
 
 export { RoleConflictError, DEFAULT_REFRESH_TOKEN_EXPIRY, DEFAULT_SESSION_EXPIRY };
 export { tokenValues, cacheTokenValues, premiumTokenValues, defaultRate, createTxMethods };
@@ -145,7 +147,9 @@ export type AllMethods = UserMethods &
   SkillMethods &
   SkillSyncMethods &
   AgentMethods &
-  ConfigMethods;
+  ConfigMethods &
+  InstitutionMethods &
+  PlatformAdminMethods;
 
 /** Dependencies injected from the api layer into createMethods */
 export interface CreateMethodsDeps {
@@ -182,6 +186,7 @@ export function createMethods(
   const transactionMethods = createTransactionMethods(mongoose, {
     getMultiplier: txMethods.getMultiplier,
     getCacheMultiplier: txMethods.getCacheMultiplier,
+    matchModelName: deps.matchModelName,
   });
 
   // Tier 3: spendTokens methods need transaction methods
@@ -201,6 +206,8 @@ export function createMethods(
   const aclEntryMethods = createAclEntryMethods(mongoose);
 
   const systemGrantMethods = createSystemGrantMethods(mongoose);
+  const institutionMethods = createInstitutionMethods(mongoose);
+  const platformAdminMethods = createPlatformAdminMethods(mongoose);
 
   // Internal removeAllPermissions: use deleteAclEntries from aclEntryMethods
   // instead of requiring it as an external dep from PermissionService
@@ -278,6 +285,8 @@ export function createMethods(
     ...agentMethods,
     /* Config */
     ...createConfigMethods(mongoose),
+    ...institutionMethods,
+    ...platformAdminMethods,
   };
 }
 
@@ -330,4 +339,6 @@ export type {
   SkillSyncMethods,
   AgentMethods,
   ConfigMethods,
+  InstitutionMethods,
+  PlatformAdminMethods,
 };

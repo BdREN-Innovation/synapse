@@ -1,7 +1,8 @@
 const path = require('path');
+const mongoose = require('mongoose');
 const { v4 } = require('uuid');
 const { countTokens } = require('@librechat/api');
-const { escapeRegExp } = require('@librechat/data-schemas');
+const { escapeRegExp, logger, runAsSystem } = require('@librechat/data-schemas');
 const {
   Constants,
   ContentTypes,
@@ -10,6 +11,7 @@ const {
 } = require('librechat-data-provider');
 const { recordMessage, getMessages, spendTokens, saveConvo } = require('~/models');
 const { retrieveAndProcessFile } = require('~/server/services/Files/process');
+const { canonicalizeModel } = require('~/server/services/usageQuota');
 
 /**
  * Initializes a new thread or adds messages to an existing thread.
@@ -505,14 +507,41 @@ const recordUsage = async ({
   model,
   user,
   conversationId,
+  messageId,
+  runId,
+  requestKey,
+  providerKey,
+  tenantId,
   context = 'message',
 }) => {
+  const resolvedUser = tenantId
+    ? null
+    : await runAsSystem(() => mongoose.models.User.findById(user).select('tenantId').lean().exec());
+  const resolvedTenantId = tenantId ?? resolvedUser?.tenantId;
+  const canonical = canonicalizeModel({ provider: providerKey, model });
+  const callDiscriminator = requestKey ?? messageId ?? runId;
+  if (!callDiscriminator) {
+    logger.warn(
+      '[recordUsage] no per-call identifier supplied; usage for this conversation and model collapses to a single ledger entry',
+      { conversationId, context, model },
+    );
+  }
   await spendTokens(
     {
       user,
       model,
+      tenantId: resolvedTenantId,
+      requireTenant: Boolean(resolvedTenantId),
+      providerKey: canonical.providerKey,
+      providerModelId: canonical.providerModelId,
       context,
       conversationId,
+      messageId,
+      requestKey:
+        requestKey ??
+        [conversationId, messageId, runId, context, canonical.providerKey, canonical.modelKey]
+          .filter(Boolean)
+          .join(':'),
     },
     { promptTokens: prompt_tokens, completionTokens: completion_tokens },
   );

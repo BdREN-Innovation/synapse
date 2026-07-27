@@ -29,9 +29,58 @@ const {
   getEndpointFileConfig,
 } = require('librechat-data-provider');
 const { getStrategyFunctions } = require('~/server/services/Files/strategies');
+const {
+  releaseUsage,
+  reserveUsage,
+  settleUsage,
+  isEnforcementDenial,
+} = require('~/server/services/usageQuota');
 const { logViolation } = require('~/cache');
 const TextStream = require('./TextStream');
 const db = require('~/models');
+
+const OUTPUT_TOKEN_KEYS = [
+  'max_tokens',
+  'maxTokens',
+  'maxOutputTokens',
+  'max_output_tokens',
+  'max_completion_tokens',
+];
+
+function resolveRequestedOutputTokens(...sources) {
+  for (const source of sources) {
+    if (!source || typeof source !== 'object') {
+      continue;
+    }
+    for (const key of OUTPUT_TOKEN_KEYS) {
+      const value = Number(source[key]);
+      if (Number.isFinite(value) && value > 0) {
+        return value;
+      }
+    }
+  }
+  return undefined;
+}
+
+function applyQuotaOutputCap(target, cap, setIfMissing = false) {
+  if (!target || typeof target !== 'object' || !Number.isFinite(cap)) {
+    return;
+  }
+  const keys = OUTPUT_TOKEN_KEYS;
+  let applied = false;
+  for (const key of keys) {
+    if (target[key] != null) {
+      target[key] = Math.min(Number(target[key]) || cap, cap);
+      applied = true;
+    }
+  }
+  if (!applied && setIfMissing) {
+    target.max_output_tokens = cap;
+  }
+  if (target.modelKwargs && typeof target.modelKwargs === 'object') {
+    applyQuotaOutputCap(target.modelKwargs, cap);
+  }
+}
 
 const collectHistoricalFileRefs = (message) => {
   const refs = [];
@@ -695,7 +744,60 @@ class BaseClient {
       );
     }
 
-    const { completion, metadata } = await this.sendCompletion(payload, opts);
+    const tenantId = this.options.req?.user?.tenantId;
+    const quotaReservationKey = `${conversationId}:${responseMessageId}:primary:0`;
+    let quota;
+    if (tenantId) {
+      try {
+        quota = await reserveUsage({
+          tenantId,
+          userId: this.user ?? this.options.req.user?.id,
+          provider: this.options.endpointType ?? this.options.endpoint,
+          model: this.modelOptions?.model ?? this.model,
+          reservationKey: quotaReservationKey,
+          estimatedInputTokens: promptTokens,
+          requestedOutputTokens: resolveRequestedOutputTokens(
+            this.modelOptions,
+            this.options.agent?.model_parameters,
+            this.options.req?.body,
+          ),
+          metadata: { conversationId, messageId: responseMessageId, inferencePath: 'base-client' },
+        });
+      } catch (error) {
+        if (isEnforcementDenial(error)) {
+          throw error;
+        }
+        logger.error(
+          '[BaseClient] usage reservation failed; continuing without quota accounting',
+          error,
+        );
+      }
+    }
+
+    if (quota?.outputTokenCap != null) {
+      applyQuotaOutputCap(payload, quota.outputTokenCap);
+      applyQuotaOutputCap(opts, quota.outputTokenCap);
+      applyQuotaOutputCap(this.options.agent?.model_parameters, quota.outputTokenCap, true);
+      if (quota.outputCapped) {
+        this.options.res?.setHeader?.('X-Quota-Event', 'QUOTA_OUTPUT_CAPPED');
+        this.options.res?.setHeader?.('X-Quota-Output-Cap', String(quota.outputTokenCap));
+      }
+    }
+
+    let completionResult;
+    try {
+      completionResult = await this.sendCompletion(payload, opts);
+    } catch (error) {
+      if (quota && error?.name !== 'AbortError' && !this.abortController?.signal?.aborted) {
+        try {
+          await releaseUsage({ tenantId, reservationKey: quotaReservationKey });
+        } catch (releaseError) {
+          logger.error('[BaseClient] failed to release usage reservation', releaseError);
+        }
+      }
+      throw error;
+    }
+    const { completion, metadata } = completionResult;
     if (this.abortController) {
       this.abortController.requestCompleted = true;
     }
@@ -715,6 +817,16 @@ class BaseClient {
       ...(this.metadata ?? {}),
       metadata: Object.keys(metadata ?? {}).length > 0 ? metadata : undefined,
     };
+    if (quota?.outputCapped) {
+      responseMessage.metadata = {
+        ...(responseMessage.metadata ?? {}),
+        quota: {
+          event: 'QUOTA_OUTPUT_CAPPED',
+          outputTokenCap: quota.outputTokenCap,
+          modelKey: quota.canonical?.modelKey,
+        },
+      };
+    }
 
     if (typeof completion === 'string') {
       responseMessage.text = completion;
@@ -745,6 +857,7 @@ class BaseClient {
       responseMessage.text = completion.join('');
     }
 
+    let quotaCompletionTokens = 0;
     if (tokenCountMap && this.recordTokenUsage && this.getTokenCountForResponse) {
       let completionTokens;
 
@@ -771,6 +884,7 @@ class BaseClient {
           messageId: this.responseMessageId,
         });
       }
+      quotaCompletionTokens = Math.max(Number(completionTokens) || 0, 0);
 
       logger.debug('[BaseClient] Response token usage', {
         messageId: responseMessage.messageId,
@@ -778,6 +892,56 @@ class BaseClient {
         promptTokens,
         completionTokens,
       });
+    }
+
+    if (quota) {
+      const quotaUsage = this.getQuotaUsage != null ? this.getQuotaUsage() : null;
+      const streamUsage = this.getStreamUsage != null ? this.getStreamUsage() : null;
+      const settlement = {
+        tenantId,
+        reservationKey: quotaReservationKey,
+        usage: {
+          inputTokens: Math.max(
+            Number(
+              quotaUsage?.inputTokens ??
+                streamUsage?.input_tokens ??
+                streamUsage?.prompt_tokens ??
+                promptTokens,
+            ) || 0,
+            0,
+          ),
+          cacheWriteTokens: Math.max(
+            Number(
+              quotaUsage?.cacheWriteTokens ??
+                streamUsage?.cache_creation_input_tokens ??
+                streamUsage?.cache_write_tokens,
+            ) || 0,
+            0,
+          ),
+          cacheReadTokens: Math.max(
+            Number(
+              quotaUsage?.cacheReadTokens ??
+                streamUsage?.cache_read_input_tokens ??
+                streamUsage?.cache_read_tokens,
+            ) || 0,
+            0,
+          ),
+          outputTokens: Math.max(
+            Number(
+              quotaUsage?.outputTokens ??
+                streamUsage?.output_tokens ??
+                streamUsage?.completion_tokens ??
+                quotaCompletionTokens,
+            ) || 0,
+            0,
+          ),
+        },
+      };
+      try {
+        await settleUsage(settlement);
+      } catch (error) {
+        logger.error('[BaseClient] failed to settle usage reservation', error);
+      }
     }
 
     if (userMessagePromise) {

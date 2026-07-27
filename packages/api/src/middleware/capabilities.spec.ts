@@ -86,6 +86,25 @@ describe('generateCapabilityCheck', () => {
         expect.objectContaining({ tenantId: 'tenant-1' }),
       );
     });
+
+    it('bypasses capability lookup for platform superadmins', async () => {
+      const isPlatformSuperadmin = jest.fn().mockResolvedValue(true);
+      const { hasCapability: platformHasCapability } = generateCapabilityCheck({
+        getUserPrincipals: mockGetUserPrincipals,
+        hasCapabilityForPrincipals: mockHasCapabilityForPrincipals,
+        isPlatformSuperadmin,
+      });
+
+      const result = await platformHasCapability(
+        { id: 'user-999', role: 'ADMIN' },
+        SystemCapabilities.MANAGE_USERS,
+      );
+
+      expect(result).toBe(true);
+      expect(isPlatformSuperadmin).toHaveBeenCalledWith({ id: 'user-999', role: 'ADMIN' });
+      expect(mockGetUserPrincipals).not.toHaveBeenCalled();
+      expect(mockHasCapabilityForPrincipals).not.toHaveBeenCalled();
+    });
   });
 
   describe('requireCapability', () => {

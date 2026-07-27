@@ -71,6 +71,21 @@ export const ErrorController = (
     }
 
     if (isCustomError(error) && error.statusCode && error.body) {
+      if (
+        error.statusCode === 429 &&
+        typeof error.body === 'object' &&
+        error.body !== null &&
+        'error' in error.body
+      ) {
+        const quotaBody = error.body as { error?: { resetAt?: string } };
+        const resetAt = quotaBody.error?.resetAt
+          ? new Date(quotaBody.error.resetAt).getTime()
+          : Number.NaN;
+        const retryAfter = Number.isFinite(resetAt)
+          ? Math.max(Math.ceil((resetAt - Date.now()) / 1000), 1)
+          : 60;
+        res.setHeader('Retry-After', String(retryAfter));
+      }
       return res.status(error.statusCode).send(error.body);
     }
 

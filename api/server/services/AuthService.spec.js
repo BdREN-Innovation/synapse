@@ -5,6 +5,10 @@ jest.mock(
     getTenantId: jest.fn(() => undefined),
     DEFAULT_SESSION_EXPIRY: 900000,
     DEFAULT_REFRESH_TOKEN_EXPIRY: 604800000,
+    InstitutionMembershipStatuses: {
+      ACTIVE: 'active',
+      SUSPENDED: 'suspended',
+    },
   }),
   { virtual: true },
 );
@@ -71,6 +75,14 @@ jest.mock('~/strategies/validators', () => ({
 }));
 jest.mock('~/server/services/Config', () => ({ getAppConfig: jest.fn() }));
 jest.mock('~/server/utils', () => ({ sendEmail: jest.fn() }));
+jest.mock('~/server/services/institutionMembers', () => ({
+  activateProvisionedMember: jest.fn(),
+  completeInviteAcceptance: jest.fn(),
+  HttpError: class HttpError extends Error {},
+}));
+jest.mock('~/server/services/platformAdmin', () => ({
+  isPlatformAdminEmail: jest.fn().mockResolvedValue(false),
+}));
 
 const {
   checkEmailConfig,
@@ -98,6 +110,11 @@ const {
 } = require('~/models');
 const { getAppConfig } = require('~/server/services/Config');
 const { sendEmail } = require('~/server/utils');
+const {
+  activateProvisionedMember,
+  completeInviteAcceptance,
+} = require('~/server/services/institutionMembers');
+const { isPlatformAdminEmail } = require('~/server/services/platformAdmin');
 const bcrypt = require('bcryptjs');
 const {
   setOpenIDAuthTokens,
@@ -470,6 +487,76 @@ describe('registerUser', () => {
         provider: 'google',
       }),
     );
+  });
+
+  it('attaches a tenant-less existing identity when it accepts an institution invite', async () => {
+    findUser.mockResolvedValueOnce({
+      _id: 'existing-user-id',
+      email: registrationPayload.email,
+      tenantId: null,
+    });
+    const invite = {
+      _id: 'invite-id',
+      tenantId: 'tenant-a',
+      requestedRole: 'INSTITUTION_ADMIN',
+    };
+
+    const result = await registerUser(registrationPayload, { invite });
+
+    expect(result.status).toBe(200);
+    expect(updateUser).toHaveBeenCalledWith(
+      'existing-user-id',
+      expect.objectContaining({
+        tenantId: 'tenant-a',
+        role: 'INSTITUTION_ADMIN',
+        membershipStatus: 'suspended',
+      }),
+    );
+    expect(activateProvisionedMember).toHaveBeenCalledWith({
+      userId: 'existing-user-id',
+      tenantId: 'tenant-a',
+    });
+    expect(completeInviteAcceptance).toHaveBeenCalledWith({
+      inviteId: 'invite-id',
+      userId: 'existing-user-id',
+    });
+    expect(createUser).not.toHaveBeenCalled();
+  });
+
+  it('never re-credentials an existing identity that accepts an invite', async () => {
+    findUser.mockResolvedValueOnce({
+      _id: 'existing-user-id',
+      email: registrationPayload.email,
+      tenantId: null,
+    });
+
+    await registerUser(registrationPayload, {
+      invite: { _id: 'invite-id', tenantId: 'tenant-a', requestedRole: 'USER' },
+    });
+
+    expect(updateUser).toHaveBeenCalledWith(
+      'existing-user-id',
+      expect.not.objectContaining({ password: expect.anything() }),
+    );
+  });
+
+  it('refuses to absorb a platform admin identity through an institution invite', async () => {
+    isPlatformAdminEmail.mockResolvedValueOnce(true);
+    findUser.mockResolvedValueOnce({
+      _id: 'platform-admin-id',
+      email: registrationPayload.email,
+      tenantId: null,
+    });
+
+    const result = await registerUser(registrationPayload, {
+      invite: { _id: 'invite-id', tenantId: 'tenant-a', requestedRole: 'INSTITUTION_ADMIN' },
+    });
+
+    expect(result.status).toBe(200);
+    expect(updateUser).not.toHaveBeenCalled();
+    expect(activateProvisionedMember).not.toHaveBeenCalled();
+    expect(completeInviteAcceptance).not.toHaveBeenCalled();
+    expect(createUser).not.toHaveBeenCalled();
   });
 });
 

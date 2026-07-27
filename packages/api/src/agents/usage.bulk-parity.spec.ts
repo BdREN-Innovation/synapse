@@ -390,16 +390,29 @@ describe('recordCollectedUsage — bulk path parity', () => {
   });
 
   describe('error handling', () => {
-    it('should catch bulk write errors — still returns correct result', async () => {
+    it('surfaces bulk write errors instead of silently losing the ledger entry', async () => {
       mockInsertMany.mockRejectedValue(new Error('DB error'));
 
       const collectedUsage: UsageMetadata[] = [
         { input_tokens: 100, output_tokens: 50, model: 'gpt-4' },
       ];
 
-      const result = await recordCollectedUsage(deps, { ...baseParams, collectedUsage });
+      await expect(recordCollectedUsage(deps, { ...baseParams, collectedUsage })).rejects.toThrow(
+        'DB error',
+      );
+    });
 
-      expect(result).toEqual({ input_tokens: 100, output_tokens: 50 });
+    it('does not charge the balance when the ledger insert fails', async () => {
+      mockInsertMany.mockRejectedValue(new Error('DB error'));
+
+      const collectedUsage: UsageMetadata[] = [
+        { input_tokens: 100, output_tokens: 50, model: 'gpt-4' },
+      ];
+
+      await expect(recordCollectedUsage(deps, { ...baseParams, collectedUsage })).rejects.toThrow(
+        'DB error',
+      );
+      expect(mockUpdateBalance).not.toHaveBeenCalled();
     });
   });
 

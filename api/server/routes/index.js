@@ -7,8 +7,11 @@ const adminGrants = require('./admin/grants');
 const adminGroups = require('./admin/groups');
 const adminRoles = require('./admin/roles');
 const adminSkills = require('./admin/skills');
+const adminUsage = require('./admin/usage');
 const adminUsers = require('./admin/users');
 const adminAuditLog = require('./admin/audit');
+const platformInstitutions = require('./platform/institutions');
+const platformUsers = require('./platform/users');
 const endpoints = require('./endpoints');
 const staticRoute = require('./static');
 const messages = require('./messages');
@@ -47,8 +50,11 @@ module.exports = {
   adminGroups,
   adminRoles,
   adminSkills,
+  adminUsage,
   adminUsers,
   adminAuditLog,
+  platformInstitutions,
+  platformUsers,
   keys,
   apiKeys,
   user,
