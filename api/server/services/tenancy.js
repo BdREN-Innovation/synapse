@@ -6,15 +6,20 @@ const {
 } = require('@librechat/data-schemas');
 const db = require('~/models');
 
-const institutionAdminCapabilities = [
-  SystemCapabilities.ACCESS_ADMIN,
-  SystemCapabilities.READ_USERS,
-  SystemCapabilities.MANAGE_USERS,
-  SystemCapabilities.READ_GROUPS,
-  SystemCapabilities.MANAGE_GROUPS,
-  SystemCapabilities.READ_ROLES,
-  SystemCapabilities.READ_USAGE,
-];
+/** Resolved on use rather than at module load: this module sits on the require
+ * chain of routes whose tests stub `@librechat/data-schemas`, and dereferencing
+ * the enum during import makes the whole chain fail to load. */
+function getInstitutionAdminCapabilities() {
+  return [
+    SystemCapabilities.ACCESS_ADMIN,
+    SystemCapabilities.READ_USERS,
+    SystemCapabilities.MANAGE_USERS,
+    SystemCapabilities.READ_GROUPS,
+    SystemCapabilities.MANAGE_GROUPS,
+    SystemCapabilities.READ_ROLES,
+    SystemCapabilities.READ_USAGE,
+  ];
+}
 
 const institutionAdminDescription =
   'Tenant-scoped institution administrator. Platform authority is not inherited.';
@@ -32,7 +37,7 @@ async function ensureInstitutionAdminRole(tenantId) {
   });
 
   await Promise.all(
-    institutionAdminCapabilities.map((capability) =>
+    getInstitutionAdminCapabilities().map((capability) =>
       db.grantCapability({
         principalType: PrincipalType.ROLE,
         principalId: INSTITUTION_ADMIN_ROLE,
@@ -69,7 +74,7 @@ async function revokeInstitutionAdmin({ tenantId, userId }) {
 }
 
 module.exports = {
-  institutionAdminCapabilities,
+  getInstitutionAdminCapabilities,
   ensureInstitutionAdminRole,
   appointInstitutionAdmin,
   revokeInstitutionAdmin,

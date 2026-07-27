@@ -788,11 +788,37 @@ class BaseClient {
     try {
       completionResult = await this.sendCompletion(payload, opts);
     } catch (error) {
-      if (quota && error?.name !== 'AbortError' && !this.abortController?.signal?.aborted) {
+      if (quota) {
+        /** An aborted generation still consumed whatever the provider produced
+         * before the stop, so settle it when usage is known and release only
+         * when nothing was billed. Leaving the reservation untouched would hold
+         * the tenant's capacity until the TTL expired and would count against
+         * the shadow stale-reservation rate. */
+        const abortedUsage =
+          (error?.name === 'AbortError' || this.abortController?.signal?.aborted === true) &&
+          this.getQuotaUsage != null
+            ? this.getQuotaUsage()
+            : null;
+        const consumedTokens =
+          Math.max(Number(abortedUsage?.inputTokens) || 0, 0) +
+          Math.max(Number(abortedUsage?.cacheWriteTokens) || 0, 0) +
+          Math.max(Number(abortedUsage?.cacheReadTokens) || 0, 0) +
+          Math.max(Number(abortedUsage?.outputTokens) || 0, 0);
         try {
-          await releaseUsage({ tenantId, reservationKey: quotaReservationKey });
-        } catch (releaseError) {
-          logger.error('[BaseClient] failed to release usage reservation', releaseError);
+          if (consumedTokens > 0) {
+            await settleUsage({
+              tenantId,
+              reservationKey: quotaReservationKey,
+              usage: abortedUsage,
+            });
+          } else {
+            await releaseUsage({ tenantId, reservationKey: quotaReservationKey });
+          }
+        } catch (quotaError) {
+          logger.error(
+            '[BaseClient] failed to finalize usage reservation after a failed generation',
+            quotaError,
+          );
         }
       }
       throw error;

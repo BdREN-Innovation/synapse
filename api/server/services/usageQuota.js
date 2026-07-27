@@ -1,5 +1,5 @@
 const mongoose = require('mongoose');
-const { getTransactionSupport, runAsSystem } = require('@librechat/data-schemas');
+const { getTransactionSupport, logger, runAsSystem } = require('@librechat/data-schemas');
 const { checkEmailConfig, matchModelName } = require('@librechat/api');
 const models = require('~/db/models');
 const { sendEmail } = require('~/server/utils');
@@ -478,8 +478,14 @@ async function transitionReservation({ tenantId, reservationKey, actualTokens, s
     /** Claim the state transition before touching buckets. This makes settle,
      * release, retry, and abort handlers idempotent even when they race. In a
      * transaction, any later bucket failure rolls the claim back with it. */
-    const reservation = await models.UsageReservation.findOneAndUpdate(
-      { tenantId, reservationKey, status: 'reserved' },
+    /** Settlement also accepts an already-expired reservation: a generation that
+     * outran the reservation TTL still consumed real tokens, and dropping them
+     * would understate usage and corrupt the shadow accuracy metrics. Its held
+     * capacity was already returned by the expiry pass, so only `usedTokens`
+     * moves in that case. */
+    const claimable = status === 'settled' ? ['reserved', 'expired'] : ['reserved'];
+    const previous = await models.UsageReservation.findOneAndUpdate(
+      { tenantId, reservationKey, status: { $in: claimable } },
       {
         $set: {
           status,
@@ -488,11 +494,11 @@ async function transitionReservation({ tenantId, reservationKey, actualTokens, s
             : { releasedAt: new Date() }),
         },
       },
-      { new: true, session },
+      { new: false, session },
     )
       .lean()
       .exec();
-    if (!reservation) {
+    if (!previous) {
       updated = await models.UsageReservation.findOne({ tenantId, reservationKey })
         .session(session)
         .lean()
@@ -500,27 +506,41 @@ async function transitionReservation({ tenantId, reservationKey, actualTokens, s
       return;
     }
 
-    for (const scope of reservationScopes(reservation)) {
+    const heldTokens = previous.status === 'reserved' ? previous.reservedTokens : 0;
+    const settledTokens = Math.max(actualTokens ?? 0, 0);
+    for (const scope of reservationScopes(previous)) {
       const increment =
         status === 'settled'
-          ? {
-              usedTokens: Math.max(actualTokens ?? 0, 0),
-              reservedTokens: -reservation.reservedTokens,
-            }
-          : { reservedTokens: -reservation.reservedTokens };
-      await models.UsageBucket.updateOne(
+          ? { usedTokens: settledTokens, reservedTokens: -heldTokens }
+          : { reservedTokens: -heldTokens };
+      const result = await models.UsageBucket.updateOne(
         {
           tenantId,
-          periodStart: reservation.periodStart,
+          periodStart: previous.periodStart,
           scopeType: scope.scopeType,
           scopeKey: scope.scopeKey,
-          reservedTokens: { $gte: reservation.reservedTokens },
+          reservedTokens: { $gte: heldTokens },
         },
         { $inc: increment },
         { session },
       ).exec();
+      if (result.matchedCount === 0) {
+        logger.warn('[usageQuota] bucket missed a reservation transition; totals need a repair', {
+          tenantId,
+          reservationKey,
+          status,
+          scopeType: scope.scopeType,
+          heldTokens,
+        });
+      }
     }
-    updated = reservation;
+    updated = {
+      ...previous,
+      status,
+      ...(status === 'settled'
+        ? { actualTokens: settledTokens, settledAt: new Date() }
+        : { releasedAt: new Date() }),
+    };
   };
   try {
     if (session) {
@@ -584,12 +604,100 @@ async function reconcileExpiredReservations({ limit = 100 } = {}) {
 }
 
 /**
- * Idempotently repairs bucket totals for periods with no in-flight
- * reservations. Active periods are skipped so reconciliation can never race a
- * live reserve/settle transaction and overwrite capacity.
+ * Recomputes one period's bucket totals from the reservations themselves.
+ *
+ * Both `usedTokens` and `reservedTokens` are derived from the same snapshot, so
+ * a reservation that is still in flight keeps its held capacity instead of
+ * being zeroed. Aggregation happens in MongoDB and is grouped down to
+ * (member, model) pairs, so memory stays bounded no matter how many
+ * reservations the period contains.
  */
-async function reconcileQuotaState({ limit = 100 } = {}) {
+async function computePeriodTotals(key, session) {
+  const pipeline = [
+    { $match: { tenantId: key.tenantId, periodStart: key.periodStart } },
+    {
+      $group: {
+        _id: { userId: '$userId', modelKey: '$modelKey' },
+        usedTokens: {
+          $sum: {
+            $cond: [{ $eq: ['$status', 'settled'] }, { $ifNull: ['$actualTokens', 0] }, 0],
+          },
+        },
+        reservedTokens: {
+          $sum: {
+            $cond: [{ $eq: ['$status', 'reserved'] }, { $ifNull: ['$reservedTokens', 0] }, 0],
+          },
+        },
+      },
+    },
+  ];
+  const aggregation = models.UsageReservation.aggregate(pipeline);
+  if (session) {
+    aggregation.session(session);
+  }
+  const rows = await aggregation.exec();
+
+  const totals = new Map();
+  const accumulate = (scopeType, scopeKey, row) => {
+    const mapKey = `${scopeType}:${scopeKey}`;
+    const current = totals.get(mapKey) ?? {
+      scopeType,
+      scopeKey,
+      usedTokens: 0,
+      reservedTokens: 0,
+    };
+    current.usedTokens += row.usedTokens ?? 0;
+    current.reservedTokens += row.reservedTokens ?? 0;
+    totals.set(mapKey, current);
+  };
+
+  for (const row of rows) {
+    accumulate('institution', key.tenantId, row);
+    accumulate('member', String(row._id.userId), row);
+    accumulate('model', row._id.modelKey, row);
+  }
+  return totals;
+}
+
+async function writePeriodTotals({ key, policyVersion, totals, session }) {
+  if (totals.size === 0) {
+    return;
+  }
+  await models.UsageBucket.bulkWrite(
+    [...totals.values()].map((total) => ({
+      updateOne: {
+        filter: {
+          tenantId: key.tenantId,
+          periodStart: key.periodStart,
+          scopeType: total.scopeType,
+          scopeKey: total.scopeKey,
+        },
+        update: {
+          $set: {
+            periodEnd: key.periodEnd,
+            policyVersion,
+            usedTokens: total.usedTokens,
+            reservedTokens: total.reservedTokens,
+          },
+        },
+        upsert: true,
+      },
+    })),
+    { session },
+  );
+}
+
+/**
+ * Repairs bucket totals from the reservation ledger.
+ *
+ * Where transactions are available the recompute and the write share one
+ * snapshot, so a concurrent reservation cannot slip between them. Without
+ * transactions only closed periods are repaired — a period whose end has
+ * passed can never receive another reservation, so there is nothing to race.
+ */
+async function reconcileQuotaState({ limit = 100, now = new Date() } = {}) {
   const expiry = await reconcileExpiredReservations({ limit });
+  const transactionCapable = await supportsTransactions();
   const periods = await runAsSystem(() =>
     models.UsageReservation.aggregate([
       {
@@ -598,71 +706,69 @@ async function reconcileQuotaState({ limit = 100 } = {}) {
             tenantId: '$tenantId',
             periodStart: '$periodStart',
             periodEnd: '$periodEnd',
-            policyVersion: '$policyVersion',
           },
-          active: { $sum: { $cond: [{ $eq: ['$status', 'reserved'] }, 1, 0] } },
+          activeCount: { $sum: { $cond: [{ $eq: ['$status', 'reserved'] }, 1, 0] } },
+          policyVersion: { $max: '$policyVersion' },
         },
       },
-      { $match: { active: 0 } },
+      { $match: { activeCount: 0 } },
       { $sort: { '_id.periodStart': -1 } },
       { $limit: Math.min(Math.max(limit, 1), 1000) },
     ]),
   );
+
   let repairedPeriods = 0;
+  let deferredPeriods = 0;
+
   for (const period of periods) {
     const key = period._id;
-    const reservations = await runAsSystem(() =>
-      models.UsageReservation.find({
-        tenantId: key.tenantId,
-        periodStart: key.periodStart,
-      })
-        .lean()
-        .exec(),
-    );
-    const totals = new Map();
-    for (const reservation of reservations) {
-      for (const scope of reservationScopes(reservation)) {
-        const mapKey = `${scope.scopeType}:${scope.scopeKey}`;
-        const current = totals.get(mapKey) ?? {
-          scopeType: scope.scopeType,
-          scopeKey: scope.scopeKey,
-          usedTokens: 0,
-        };
-        if (reservation.status === 'settled') {
-          current.usedTokens += reservation.actualTokens ?? 0;
-        }
-        totals.set(mapKey, current);
-      }
-    }
-    if (totals.size === 0) {
+    const periodEnd = key.periodEnd instanceof Date ? key.periodEnd : new Date(key.periodEnd);
+    const periodClosed = periodEnd <= now;
+
+    if (!transactionCapable && !periodClosed) {
+      deferredPeriods += 1;
       continue;
     }
-    await runAsSystem(() =>
-      models.UsageBucket.bulkWrite(
-        [...totals.values()].map((total) => ({
-          updateOne: {
-            filter: {
-              tenantId: key.tenantId,
-              periodStart: key.periodStart,
-              scopeType: total.scopeType,
-              scopeKey: total.scopeKey,
-            },
-            update: {
-              $set: {
-                periodEnd: key.periodEnd,
-                policyVersion: key.policyVersion,
-                usedTokens: total.usedTokens,
-                reservedTokens: 0,
-              },
-            },
-            upsert: true,
-          },
-        })),
-      ),
-    );
-    repairedPeriods += 1;
+
+    if (!transactionCapable) {
+      await runAsSystem(async () => {
+        const totals = await computePeriodTotals(key, null);
+        await writePeriodTotals({
+          key,
+          policyVersion: period.policyVersion,
+          totals,
+          session: null,
+        });
+      });
+      repairedPeriods += 1;
+      continue;
+    }
+
+    const session = await mongoose.startSession();
+    try {
+      await runAsSystem(() =>
+        session.withTransaction(async () => {
+          const totals = await computePeriodTotals(key, session);
+          await writePeriodTotals({
+            key,
+            policyVersion: period.policyVersion,
+            totals,
+            session,
+          });
+        }),
+      );
+      repairedPeriods += 1;
+    } finally {
+      await session.endSession();
+    }
   }
-  return { ...expiry, inspectedPeriods: periods.length, repairedPeriods };
+
+  return {
+    ...expiry,
+    inspectedPeriods: periods.length,
+    repairedPeriods,
+    deferredPeriods,
+  };
 }
 
 async function getQuotaHealth({ tenantId, now = new Date() }) {
@@ -823,8 +929,38 @@ async function emitUsageWarnings(reservation) {
   }
 }
 
+/**
+ * Reports whether any institution is *currently* enforcing. Policies are
+ * immutable and append-only, so a tenant that once enforced and has since
+ * rolled back still owns an enforce-mode document; only the version each
+ * institution actually points at counts.
+ */
+async function hasActiveEnforcingPolicy() {
+  return await runAsSystem(async () => {
+    const institutions = await models.Institution.find({ usagePolicyVersion: { $gte: 1 } })
+      .select('tenantId usagePolicyVersion')
+      .lean()
+      .exec();
+    const batchSize = 200;
+    for (let index = 0; index < institutions.length; index += batchSize) {
+      const batch = institutions.slice(index, index + batchSize);
+      const found = await models.UsagePolicy.exists({
+        mode: 'enforce',
+        $or: batch.map((institution) => ({
+          tenantId: institution.tenantId,
+          version: institution.usagePolicyVersion,
+        })),
+      });
+      if (found) {
+        return true;
+      }
+    }
+    return false;
+  });
+}
+
 async function assertEnforcementTopology() {
-  const enforcingPolicy = await runAsSystem(() => models.UsagePolicy.exists({ mode: 'enforce' }));
+  const enforcingPolicy = await hasActiveEnforcingPolicy();
   if (!enforcingPolicy) {
     return { enforcing: false, transactionCapable: await supportsTransactions() };
   }
@@ -837,84 +973,181 @@ async function assertEnforcementTopology() {
   return { enforcing: true, transactionCapable };
 }
 
+/**
+ * Measures whether an institution's shadow observation is trustworthy enough to
+ * switch on enforcement.
+ *
+ * All reservation metrics are aggregated in MongoDB: a tenant that has reached
+ * the call threshold has far too many reservations to pull into memory.
+ *
+ * `observedDays` measures the full span since the tenant's first reservation,
+ * not the span inside the sampling window — the earliest reservation within a
+ * 7-day window is by definition younger than 7 days, so a windowed measure
+ * could never reach the threshold it is compared against.
+ *
+ * Coverage compares reservations against distinct primary inferences in the
+ * ledger (`context: 'message'`, keyed by conversation and message). Auxiliary
+ * spend — titles, vision tools, assistants runs — is reported separately as
+ * `unreservedAuxiliaryCalls` because those paths are ledgered but not yet
+ * reserved; they are informational, not part of the coverage ratio.
+ */
 async function getShadowReadiness({ tenantId, minimumDays = 7, minimumCalls = 1000 }) {
   const now = new Date();
   const cutoff = new Date(now.getTime() - minimumDays * 24 * 60 * 60 * 1000);
-  const [reservations, unattributedEvents, duplicateGroups, ledgerCallGroups] = await runAsSystem(
-    () =>
-      Promise.all([
-        models.UsageReservation.find({ tenantId, createdAt: { $gte: cutoff } })
-          .lean()
-          .exec(),
-        mongoose.models.Transaction.countDocuments({
-          tenantId,
-          createdAt: { $gte: cutoff },
-          $or: [
-            { requestKey: { $exists: false } },
-            { providerKey: { $exists: false } },
-            { modelKey: { $exists: false } },
-            { user: { $exists: false } },
-          ],
-        }),
-        mongoose.models.Transaction.aggregate([
-          { $match: { tenantId, createdAt: { $gte: cutoff }, requestKey: { $type: 'string' } } },
-          {
-            $group: {
-              _id: { requestKey: '$requestKey', tokenType: '$tokenType', valueKey: '$valueKey' },
-              count: { $sum: 1 },
+  const [
+    reservationSummary,
+    firstReservation,
+    unattributedEvents,
+    duplicateGroups,
+    primaryLedgerCalls,
+    auxiliaryLedgerCalls,
+  ] = await runAsSystem(() =>
+    Promise.all([
+      models.UsageReservation.aggregate([
+        { $match: { tenantId, createdAt: { $gte: cutoff } } },
+        {
+          $group: {
+            _id: null,
+            total: { $sum: 1 },
+            settled: { $sum: { $cond: [{ $eq: ['$status', 'settled'] }, 1, 0] } },
+            stale: {
+              $sum: {
+                $cond: [
+                  {
+                    $or: [
+                      { $eq: ['$status', 'expired'] },
+                      {
+                        $and: [{ $eq: ['$status', 'reserved'] }, { $lte: ['$expiresAt', now] }],
+                      },
+                    ],
+                  },
+                  1,
+                  0,
+                ],
+              },
+            },
+            underestimated: {
+              $sum: {
+                $cond: [
+                  {
+                    $and: [
+                      { $eq: ['$status', 'settled'] },
+                      { $gt: [{ $ifNull: ['$actualTokens', 0] }, '$reservedTokens'] },
+                    ],
+                  },
+                  1,
+                  0,
+                ],
+              },
+            },
+            totalActual: {
+              $sum: {
+                $cond: [{ $eq: ['$status', 'settled'] }, { $ifNull: ['$actualTokens', 0] }, 0],
+              },
+            },
+            totalUnderestimate: {
+              $sum: {
+                $cond: [
+                  { $eq: ['$status', 'settled'] },
+                  {
+                    $max: [
+                      { $subtract: [{ $ifNull: ['$actualTokens', 0] }, '$reservedTokens'] },
+                      0,
+                    ],
+                  },
+                  0,
+                ],
+              },
             },
           },
-          { $match: { count: { $gt: 1 } } },
-          { $count: 'groups' },
-        ]),
-        mongoose.models.Transaction.aggregate([
-          {
-            $match: {
-              tenantId,
-              createdAt: { $gte: cutoff },
-              requestKey: { $type: 'string' },
-            },
-          },
-          { $group: { _id: '$requestKey' } },
-          { $count: 'calls' },
-        ]),
+        },
       ]),
+      models.UsageReservation.find({ tenantId })
+        .sort({ createdAt: 1 })
+        .limit(1)
+        .select('createdAt')
+        .lean()
+        .exec(),
+      mongoose.models.Transaction.countDocuments({
+        tenantId,
+        createdAt: { $gte: cutoff },
+        $or: [
+          { requestKey: { $exists: false } },
+          { providerKey: { $exists: false } },
+          { modelKey: { $exists: false } },
+          { user: { $exists: false } },
+        ],
+      }),
+      mongoose.models.Transaction.aggregate([
+        { $match: { tenantId, createdAt: { $gte: cutoff }, requestKey: { $type: 'string' } } },
+        {
+          $group: {
+            _id: { requestKey: '$requestKey', tokenType: '$tokenType', valueKey: '$valueKey' },
+            count: { $sum: 1 },
+          },
+        },
+        { $match: { count: { $gt: 1 } } },
+        { $count: 'groups' },
+      ]),
+      mongoose.models.Transaction.aggregate([
+        {
+          $match: {
+            tenantId,
+            createdAt: { $gte: cutoff },
+            context: 'message',
+            messageId: { $type: 'string' },
+          },
+        },
+        { $group: { _id: { conversationId: '$conversationId', messageId: '$messageId' } } },
+        { $count: 'calls' },
+      ]),
+      mongoose.models.Transaction.aggregate([
+        {
+          $match: {
+            tenantId,
+            createdAt: { $gte: cutoff },
+            context: { $ne: 'message' },
+            requestKey: { $type: 'string' },
+          },
+        },
+        { $group: { _id: '$requestKey' } },
+        { $count: 'calls' },
+      ]),
+    ]),
   );
-  const settled = reservations.filter((item) => item.status === 'settled');
-  const stale = reservations.filter(
-    (item) => item.status === 'expired' || (item.status === 'reserved' && item.expiresAt <= now),
-  );
-  const underestimated = settled.filter((item) => (item.actualTokens ?? 0) > item.reservedTokens);
-  const totalActual = settled.reduce((sum, item) => sum + (item.actualTokens ?? 0), 0);
-  const totalUnderestimate = settled.reduce(
-    (sum, item) => sum + Math.max((item.actualTokens ?? 0) - item.reservedTokens, 0),
-    0,
-  );
-  const observedDays =
-    reservations.length === 0
-      ? 0
-      : (now.getTime() -
-          Math.min(...reservations.map((item) => new Date(item.createdAt).getTime()))) /
-        (24 * 60 * 60 * 1000);
-  const staleRate = reservations.length === 0 ? 0 : stale.length / reservations.length;
-  const underestimateRate = settled.length === 0 ? 0 : underestimated.length / settled.length;
-  const estimationOverageRate = totalActual === 0 ? 0 : totalUnderestimate / totalActual;
-  const ledgerCalls = ledgerCallGroups[0]?.calls ?? 0;
-  const reservationCoverageRate =
-    ledgerCalls === 0 ? 0 : Math.min(reservations.length / ledgerCalls, 1);
+
+  const summary = reservationSummary[0] ?? {
+    total: 0,
+    settled: 0,
+    stale: 0,
+    underestimated: 0,
+    totalActual: 0,
+    totalUnderestimate: 0,
+  };
+  const earliestCreatedAt = firstReservation[0]?.createdAt;
+  const observedDays = earliestCreatedAt
+    ? (now.getTime() - new Date(earliestCreatedAt).getTime()) / (24 * 60 * 60 * 1000)
+    : 0;
+  const staleRate = summary.total === 0 ? 0 : summary.stale / summary.total;
+  const underestimateRate = summary.settled === 0 ? 0 : summary.underestimated / summary.settled;
+  const estimationOverageRate =
+    summary.totalActual === 0 ? 0 : summary.totalUnderestimate / summary.totalActual;
+  const ledgerCalls = primaryLedgerCalls[0]?.calls ?? 0;
+  const reservationCoverageRate = ledgerCalls === 0 ? 0 : Math.min(summary.total / ledgerCalls, 1);
   const metrics = {
     observedDays,
-    attributableCalls: reservations.length,
-    settledCalls: settled.length,
+    attributableCalls: summary.total,
+    settledCalls: summary.settled,
     unattributedEvents,
     duplicateGroups: duplicateGroups[0]?.groups ?? 0,
-    staleReservations: stale.length,
+    staleReservations: summary.stale,
     staleRate,
-    underestimatedCalls: underestimated.length,
+    underestimatedCalls: summary.underestimated,
     underestimateRate,
     estimationOverageRate,
     ledgerCalls,
-    uncoveredLedgerCalls: Math.max(ledgerCalls - reservations.length, 0),
+    uncoveredLedgerCalls: Math.max(ledgerCalls - summary.total, 0),
+    unreservedAuxiliaryCalls: auxiliaryLedgerCalls[0]?.calls ?? 0,
     reservationCoverageRate,
   };
   return {
@@ -931,7 +1164,7 @@ async function getShadowReadiness({ tenantId, minimumDays = 7, minimumCalls = 10
     metrics,
     ready:
       observedDays >= minimumDays &&
-      reservations.length >= minimumCalls &&
+      summary.total >= minimumCalls &&
       unattributedEvents === 0 &&
       (duplicateGroups[0]?.groups ?? 0) === 0 &&
       staleRate < 0.001 &&

@@ -169,6 +169,88 @@ describe('usageQuota reservations (replica set)', () => {
     expect((await models.Institution.findOne({ tenantId }).lean()).usagePolicyVersion).toBe(2);
   });
 
+  describe('reconciliation', () => {
+    it('settles a reservation that outran its TTL instead of dropping the usage', async () => {
+      const reservationKey = 'late-settle';
+      await quota.reserveUsage({
+        tenantId,
+        userId,
+        provider: 'openai',
+        model: 'gpt-4o',
+        reservationKey,
+        estimatedInputTokens: 100,
+        requestedOutputTokens: 200,
+      });
+
+      await models.UsageReservation.updateOne(
+        { tenantId, reservationKey },
+        { $set: { expiresAt: new Date(Date.now() - 1000) } },
+      );
+      await quota.reconcileExpiredReservations({ limit: 10 });
+      expect(
+        (await models.UsageReservation.findOne({ tenantId, reservationKey }).lean()).status,
+      ).toBe('expired');
+
+      await quota.settleUsage({
+        tenantId,
+        reservationKey,
+        usage: { inputTokens: 120, outputTokens: 60 },
+      });
+
+      const reservation = await models.UsageReservation.findOne({
+        tenantId,
+        reservationKey,
+      }).lean();
+      expect(reservation.status).toBe('settled');
+      expect(reservation.actualTokens).toBe(180);
+
+      const bucket = await models.UsageBucket.findOne({
+        tenantId,
+        scopeType: 'institution',
+        scopeKey: tenantId,
+      }).lean();
+      expect(bucket.usedTokens).toBe(180);
+      expect(bucket.reservedTokens).toBe(0);
+    });
+
+    it('preserves capacity held by an in-flight reservation while repairing totals', async () => {
+      await quota.reserveUsage({
+        tenantId,
+        userId,
+        provider: 'openai',
+        model: 'gpt-4o',
+        reservationKey: 'settled-call',
+        estimatedInputTokens: 50,
+        requestedOutputTokens: 50,
+      });
+      await quota.settleUsage({
+        tenantId,
+        reservationKey: 'settled-call',
+        usage: { inputTokens: 50, outputTokens: 25 },
+      });
+
+      const inFlight = await quota.reserveUsage({
+        tenantId,
+        userId,
+        provider: 'openai',
+        model: 'gpt-4o',
+        reservationKey: 'in-flight-call',
+        estimatedInputTokens: 60,
+        requestedOutputTokens: 40,
+      });
+
+      await quota.reconcileQuotaState({ limit: 50 });
+
+      const bucket = await models.UsageBucket.findOne({
+        tenantId,
+        scopeType: 'institution',
+        scopeKey: tenantId,
+      }).lean();
+      expect(bucket.usedTokens).toBe(75);
+      expect(bucket.reservedTokens).toBe(inFlight.reservation.reservedTokens);
+    });
+  });
+
   describe('shadow mode', () => {
     beforeEach(async () => {
       await models.UsagePolicy.deleteMany({ tenantId });
