@@ -35,10 +35,14 @@ const { findUser, createUser, updateUser, findRolesByNames } = require('~/models
 const { getAppConfig } = require('~/server/services/Config');
 const getLogStores = require('~/cache/getLogStores');
 const { ensureInstitutionAdminRole } = require('~/server/services/tenancy');
-const {
-  activateProvisionedMember,
-  InstitutionMembershipStatuses,
-} = require('~/server/services/institutionMembers');
+const { InstitutionMembershipStatuses } = require('@librechat/data-schemas');
+
+/** Required on use: `institutionMembers` builds the whole model registry at
+ * import time, and pulling that into this strategy's module graph makes every
+ * consumer of it (down to the MCP service) construct models just by being
+ * required. */
+const activateProvisionedMember = (...args) =>
+  require('~/server/services/institutionMembers').activateProvisionedMember(...args);
 
 /**
  * @typedef {import('openid-client').ClientMetadata} ClientMetadata
@@ -693,33 +697,33 @@ async function processOpenIDAuth(tokenset, existingUsersOnly = false) {
     throw new Error('User does not exist');
   }
 
-    if (!user) {
-      user = {
-        provider: 'openid',
-        openidId: userinfo.sub,
+  if (!user) {
+    user = {
+      provider: 'openid',
+      openidId: userinfo.sub,
       username,
       email: email || '',
-        emailVerified: userinfo.email_verified || false,
-        name: fullName,
-        idOnTheSource: userinfo.oid,
-        openidIssuer,
-        ...(userinfo.tenantId
-          ? {
-              tenantId: userinfo.tenantId,
-              membershipStatus: InstitutionMembershipStatuses.SUSPENDED,
-            }
-          : null),
-      };
+      emailVerified: userinfo.email_verified || false,
+      name: fullName,
+      idOnTheSource: userinfo.oid,
+      openidIssuer,
+      ...(userinfo.tenantId
+        ? {
+            tenantId: userinfo.tenantId,
+            membershipStatus: InstitutionMembershipStatuses.SUSPENDED,
+          }
+        : null),
+    };
 
-      const balanceConfig = getBalanceConfig(appConfig);
-      user = await createUser(user, balanceConfig, true, true);
-      if (user.tenantId) {
-        user = await activateProvisionedMember({
-          userId: user._id.toString(),
-          tenantId: user.tenantId,
-        });
-      }
-    } else {
+    const balanceConfig = getBalanceConfig(appConfig);
+    user = await createUser(user, balanceConfig, true, true);
+    if (user.tenantId) {
+      user = await activateProvisionedMember({
+        userId: user._id.toString(),
+        tenantId: user.tenantId,
+      });
+    }
+  } else {
     user.provider = 'openid';
     user.openidId = userinfo.sub;
     if (openidIssuer) {
