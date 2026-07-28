@@ -1,5 +1,5 @@
 import { useForm } from 'react-hook-form';
-import React, { useContext, useState } from 'react';
+import React, { useContext, useEffect, useState } from 'react';
 import { Turnstile } from '@marsidev/react-turnstile';
 import { ThemeContext, SecretInput, Spinner, Button, isDark } from '@librechat/client';
 import { useNavigate, useOutletContext, useLocation } from 'react-router-dom';
@@ -19,10 +19,12 @@ const Registration: React.FC = () => {
   const {
     watch,
     register,
+    setValue,
     handleSubmit,
     formState: { errors },
   } = useForm<TRegisterUser>({ mode: 'onChange' });
   const password = watch('password');
+  const [invitedEmail, setInvitedEmail] = useState<string | null>(null);
 
   const [errorMessage, setErrorMessage] = useState<string>('');
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -33,6 +35,34 @@ const Registration: React.FC = () => {
   const queryParams = new URLSearchParams(location.search);
   const token = queryParams.get('token');
   const validTheme = isDark(theme) ? 'dark' : 'light';
+
+  /** An invitation is addressed to one person: prefill what the administrator
+   *  already supplied and pin the address, so the account cannot be created for
+   *  someone other than the invitee. The server enforces this regardless. */
+  useEffect(() => {
+    if (!token) {
+      return;
+    }
+    let cancelled = false;
+    fetch(`/api/auth/invite/${encodeURIComponent(token)}`)
+      .then((response) => (response.ok ? response.json() : null))
+      .then((invite) => {
+        if (cancelled || !invite?.email) {
+          return;
+        }
+        setInvitedEmail(invite.email);
+        setValue('email', invite.email, { shouldValidate: true });
+        if (invite.name) {
+          setValue('name', invite.name, { shouldValidate: true });
+        }
+      })
+      .catch(() => {
+        /** Prefill is a convenience; registration still validates the token. */
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [setValue, token]);
 
   // only require captcha if we have a siteKey
   const requireCaptcha = Boolean(startupConfig?.turnstile?.siteKey);
@@ -71,7 +101,13 @@ const Registration: React.FC = () => {
     },
   });
 
-  const renderInput = (id: string, label: TranslationKeys, type: string, validation: object) => {
+  const renderInput = (
+    id: string,
+    label: TranslationKeys,
+    type: string,
+    validation: object,
+    readOnly = false,
+  ) => {
     const fieldLabel = localize(label);
     const field = register(
       id as 'name' | 'email' | 'username' | 'password' | 'confirm_password',
@@ -104,8 +140,14 @@ const Registration: React.FC = () => {
                 autoComplete={id}
                 aria-label={fieldLabel}
                 {...field}
+                readOnly={readOnly}
+                aria-readonly={readOnly || undefined}
                 aria-invalid={!!errors[id]}
-                className={authInputClassName}
+                className={
+                  readOnly
+                    ? `${authInputClassName} cursor-not-allowed opacity-70`
+                    : authInputClassName
+                }
                 placeholder=" "
                 data-testid={id}
               />
@@ -176,21 +218,27 @@ const Registration: React.FC = () => {
                 message: localize('com_auth_username_max_length'),
               },
             })}
-            {renderInput('email', 'com_auth_email', 'email', {
-              required: localize('com_auth_email_required'),
-              minLength: {
-                value: 1,
-                message: localize('com_auth_email_min_length'),
+            {renderInput(
+              'email',
+              'com_auth_email',
+              'email',
+              {
+                required: localize('com_auth_email_required'),
+                minLength: {
+                  value: 1,
+                  message: localize('com_auth_email_min_length'),
+                },
+                maxLength: {
+                  value: 120,
+                  message: localize('com_auth_email_max_length'),
+                },
+                pattern: {
+                  value: /\S+@\S+\.\S+/,
+                  message: localize('com_auth_email_pattern'),
+                },
               },
-              maxLength: {
-                value: 120,
-                message: localize('com_auth_email_max_length'),
-              },
-              pattern: {
-                value: /\S+@\S+\.\S+/,
-                message: localize('com_auth_email_pattern'),
-              },
-            })}
+              invitedEmail != null,
+            )}
             {renderInput('password', 'com_auth_password', 'password', {
               required: localize('com_auth_password_required'),
               minLength: {

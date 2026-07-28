@@ -158,6 +158,34 @@ async function getSeatSummary(tenantId) {
   };
 }
 
+/**
+ * Refuses to hand out more invitations than there are seats to accept them.
+ *
+ * A pending invitation is a claim on a seat: the invitee will occupy one the
+ * moment they register. Counting only active members would let an admin issue
+ * invitations that are guaranteed to fail at the very last step, after the
+ * invitee has already filled in the registration form.
+ */
+async function assertSeatsAvailable(tenantId, additionalSeats = 1) {
+  const { activeMembers, maxActiveMembers, pendingInvites } = await getSeatSummary(tenantId);
+  if (maxActiveMembers == null) {
+    return { activeMembers, maxActiveMembers, pendingInvites, remaining: Infinity };
+  }
+
+  const claimed = activeMembers + pendingInvites;
+  const remaining = Math.max(maxActiveMembers - claimed, 0);
+  if (additionalSeats > remaining) {
+    throw new HttpError(
+      409,
+      remaining === 0
+        ? `Seat limit reached (${claimed} of ${maxActiveMembers} seats used, including pending invitations). Raise the seat limit or remove a member before inviting anyone else.`
+        : `Only ${remaining} seat${remaining === 1 ? '' : 's'} remain (${claimed} of ${maxActiveMembers} used, including pending invitations), but ${additionalSeats} were requested.`,
+    );
+  }
+
+  return { activeMembers, maxActiveMembers, pendingInvites, remaining };
+}
+
 async function assertSeatLimitChangeAllowed(tenantId, nextMaxActiveMembers) {
   if (nextMaxActiveMembers == null) {
     return;
@@ -531,8 +559,11 @@ async function ensureNoCrossTenantConflict(email, tenantId) {
   return existing;
 }
 
-async function sendInstitutionInviteEmail({ email, token, appName }) {
-  const inviteLink = `${process.env.DOMAIN_CLIENT}/register?token=${encodeURIComponent(token)}`;
+async function sendInstitutionInviteEmail({ email, token, appName, name }) {
+  /** DOMAIN_CLIENT is where a browser reaches the app, which in local dev is the
+   *  Vite server, not the API. */
+  const appUrl = (process.env.DOMAIN_CLIENT || '').replace(/\/+$/, '');
+  const inviteLink = `${appUrl}/register?token=${encodeURIComponent(token)}`;
 
   if (!checkEmailConfig()) {
     return { inviteLink };
@@ -541,12 +572,13 @@ async function sendInstitutionInviteEmail({ email, token, appName }) {
   try {
     await sendEmail({
       email,
-      subject: `Invite to join ${appName}!`,
+      subject: `You're invited to join ${appName}`,
       payload: {
         appName,
+        appUrl,
         inviteLink,
         year: new Date().getFullYear(),
-        name: email,
+        name: String(name || '').trim(),
       },
       template: 'inviteUser.handlebars',
     });
@@ -583,6 +615,8 @@ async function createInstitutionInvite({
   if (await isPlatformAdminEmail(normalizedEmail)) {
     throw new HttpError(409, 'This email address cannot be invited');
   }
+
+  await assertSeatsAvailable(tenantId, 1);
 
   const existingUser = await ensureNoCrossTenantConflict(normalizedEmail, tenantId);
   if (
@@ -628,6 +662,7 @@ async function createInstitutionInvite({
     email: normalizedEmail,
     token: rawToken,
     appName,
+    name: invite.name,
   });
 
   await recordMemberAudit({
@@ -667,6 +702,7 @@ async function resendInstitutionInvite({ tenantId, inviteId, actor, context }) {
     email: invite.email,
     token: rawToken,
     appName: process.env.APP_TITLE || 'LibreChat',
+    name: invite.name,
   });
 
   await recordMemberAudit({
@@ -1051,6 +1087,41 @@ async function removeInstitutionMember({ tenantId, userId, actor, context }) {
   return result;
 }
 
+/**
+ * Resolves an invitation from its token alone, for prefilling the registration
+ * form. The token is the shared secret that was mailed to the invitee, so
+ * returning the address it was sent to discloses nothing they do not have.
+ * Only pending invitations resolve; nothing else is exposed.
+ */
+async function resolveInstitutionInviteByToken(encodedToken) {
+  const token = decodeURIComponent(String(encodedToken ?? ''));
+  if (!token) {
+    return null;
+  }
+
+  const tokenHash = await hashToken(token);
+  const invite = await runAsSystem(() => models.InstitutionInvite.findOne({ tokenHash }).exec());
+
+  if (!invite) {
+    return null;
+  }
+
+  if (
+    invite.status === InstitutionInviteStatuses.PENDING &&
+    invite.expiresAt &&
+    invite.expiresAt.getTime() < Date.now()
+  ) {
+    invite.status = InstitutionInviteStatuses.EXPIRED;
+    await invite.save();
+  }
+
+  return {
+    email: invite.email,
+    name: invite.name || '',
+    status: invite.status,
+  };
+}
+
 async function findInstitutionInviteByToken(encodedToken, email) {
   const token = decodeURIComponent(encodedToken);
   const tokenHash = await hashToken(token);
@@ -1333,9 +1404,24 @@ function summarizeImportResults(results) {
 
 async function dryRunInstitutionImport({ tenantId, csvText }) {
   const results = await analyzeImportRows({ tenantId, csvText });
+  const summary = summarizeImportResults(results);
+  const { activeMembers, maxActiveMembers, pendingInvites } = await getSeatSummary(tenantId);
+  const remaining =
+    maxActiveMembers == null
+      ? null
+      : Math.max(maxActiveMembers - (activeMembers + pendingInvites), 0);
+
   return {
     results,
-    summary: summarizeImportResults(results),
+    summary,
+    seats: {
+      activeMembers,
+      maxActiveMembers,
+      pendingInvites,
+      remaining,
+      requested: summary.invitesCreated,
+      overBy: remaining == null ? 0 : Math.max(summary.invitesCreated - remaining, 0),
+    },
   };
 }
 
@@ -1350,6 +1436,7 @@ async function createInstitutionImportJob({ tenantId, csvText, actor, context })
   }
 
   const dryRun = await dryRunInstitutionImport({ tenantId, csvText });
+  await assertSeatsAvailable(tenantId, dryRun.summary.invitesCreated);
 
   const createdJob = await runAsSystem(() =>
     models.InstitutionImportJob.create({
@@ -1519,6 +1606,7 @@ async function getInstitutionImportJob({ tenantId, jobId }) {
 module.exports = {
   HttpError,
   assertSeatLimitChangeAllowed,
+  assertSeatsAvailable,
   completeInviteAcceptance,
   createInstitutionImportJob,
   createInstitutionInvite,
@@ -1531,6 +1619,7 @@ module.exports = {
   listInstitutionMembers,
   listPlatformInstitutionMembers,
   removeInstitutionMember,
+  resolveInstitutionInviteByToken,
   reactivateInstitutionMember,
   resendInstitutionInvite,
   revokeInstitutionInvite,
