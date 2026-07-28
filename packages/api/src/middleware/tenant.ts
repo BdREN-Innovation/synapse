@@ -4,6 +4,7 @@ import { tenantStorage, logger, SYSTEM_TENANT_ID } from '@librechat/data-schemas
 import type { TenantContext } from '@librechat/data-schemas';
 import type { Response, NextFunction } from 'express';
 import type { ServerRequest } from '~/types/http';
+import { recordCrossTenantRejection, recordTenantContextFailure } from '~/app/metrics';
 import { validateActiveInstitution } from './institution';
 
 type ContextUser = {
@@ -127,6 +128,7 @@ export function tenantContextMiddleware(
     logger.warn('[tenantContextMiddleware] Rejected system tenant for request route', {
       path: req.path,
     });
+    recordCrossTenantRejection('system_tenant');
     res.status(403).json({ error: SYSTEM_TENANT_REJECTION_MESSAGE });
     return;
   }
@@ -138,6 +140,7 @@ export function tenantContextMiddleware(
 
   if (!tenantId) {
     if (isStrict()) {
+      recordTenantContextFailure('missing_tenant_strict');
       res.status(403).json({ error: 'Tenant context required in strict isolation mode' });
       return;
     }
@@ -281,12 +284,7 @@ export function restoreTenantContextFromReq(
   return validateActiveInstitution(resolvedTenantId)
     .then((result) => {
       if (!result.ok) {
-        return rejectRequestWithUploadCleanupInContext(
-          context,
-          req,
-          res,
-          result.message,
-        );
+        return rejectRequestWithUploadCleanupInContext(context, req, res, result.message);
       }
 
       const currentContext = tenantStorage.getStore();

@@ -198,6 +198,46 @@ let rumProxyMetrics: RumProxyMetrics = {
   recordRequest: () => undefined,
 };
 
+/**
+ * Multi-tenancy and quota signals (Phase 9). Labels are deliberately
+ * low-cardinality — never a tenantId — so a tenant per university cannot blow
+ * up the series count.
+ */
+type TenancyMetrics = {
+  recordQuotaDenial: (scope: string) => void;
+  recordReservationExpiry: (count: number) => void;
+  recordTenantContextFailure: (reason: string) => void;
+  recordCrossTenantRejection: (surface: string) => void;
+};
+
+let tenancyMetrics: TenancyMetrics = {
+  recordQuotaDenial: () => undefined,
+  recordReservationExpiry: () => undefined,
+  recordTenantContextFailure: () => undefined,
+  recordCrossTenantRejection: () => undefined,
+};
+
+/** A member or institution was refused capacity in enforce mode. */
+export function recordQuotaDenial(scope: string): void {
+  tenancyMetrics.recordQuotaDenial(scope);
+}
+
+/** Reservations reclaimed by expiry. Sustained non-zero means capacity is being
+ *  held by runs that never settled — a reservation leak. */
+export function recordReservationExpiry(count: number): void {
+  tenancyMetrics.recordReservationExpiry(count);
+}
+
+/** A request could not be bound to a tenant, or asked for one it may not have. */
+export function recordTenantContextFailure(reason: string): void {
+  tenancyMetrics.recordTenantContextFailure(reason);
+}
+
+/** A request was refused because it addressed another tenant's data. */
+export function recordCrossTenantRejection(surface: string): void {
+  tenancyMetrics.recordCrossTenantRejection(surface);
+}
+
 const resetMetricRecorders = (): void => {
   openIDUserLookupMetrics = {
     recordLookup: () => undefined,
@@ -210,6 +250,12 @@ const resetMetricRecorders = (): void => {
     setJobsInFlight: () => undefined,
     recordSubscription: () => undefined,
     recordResumePendingEvents: () => undefined,
+  };
+  tenancyMetrics = {
+    recordQuotaDenial: () => undefined,
+    recordReservationExpiry: () => undefined,
+    recordTenantContextFailure: () => undefined,
+    recordCrossTenantRejection: () => undefined,
   };
   rumProxyMetrics = {
     recordRequest: () => undefined,
@@ -537,6 +583,44 @@ export function createMetrics(): PrometheusMetrics {
 
   rumProxyMetrics = {
     recordRequest: (endpoint, result) => rumProxyRequests.inc({ endpoint, result }),
+  };
+
+  const quotaDenials = new Counter({
+    name: 'quota_denials_total',
+    help: 'Requests refused for exceeding a usage quota, by limiting scope',
+    labelNames: ['scope'] as const,
+    registers: [registry],
+  });
+
+  const reservationExpiries = new Counter({
+    name: 'usage_reservation_expiries_total',
+    help: 'Usage reservations reclaimed by expiry rather than settled; sustained non-zero indicates a reservation leak',
+    registers: [registry],
+  });
+
+  const tenantContextFailures = new Counter({
+    name: 'tenant_context_failures_total',
+    help: 'Requests that could not be bound to a valid tenant context',
+    labelNames: ['reason'] as const,
+    registers: [registry],
+  });
+
+  const crossTenantRejections = new Counter({
+    name: 'cross_tenant_rejections_total',
+    help: 'Requests refused because they addressed another tenant',
+    labelNames: ['surface'] as const,
+    registers: [registry],
+  });
+
+  tenancyMetrics = {
+    recordQuotaDenial: (scope) => quotaDenials.inc({ scope }),
+    recordReservationExpiry: (count) => {
+      if (count > 0) {
+        reservationExpiries.inc(count);
+      }
+    },
+    recordTenantContextFailure: (reason) => tenantContextFailures.inc({ reason }),
+    recordCrossTenantRejection: (surface) => crossTenantRejections.inc({ surface }),
   };
 
   const metricsMiddleware = (req: Request, res: Response, next: NextFunction): void => {

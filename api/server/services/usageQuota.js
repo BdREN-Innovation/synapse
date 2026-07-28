@@ -1,6 +1,11 @@
 const mongoose = require('mongoose');
 const { getTransactionSupport, logger, runAsSystem } = require('@librechat/data-schemas');
-const { checkEmailConfig, matchModelName } = require('@librechat/api');
+const {
+  checkEmailConfig,
+  matchModelName,
+  recordQuotaDenial,
+  recordReservationExpiry,
+} = require('@librechat/api');
 const models = require('~/db/models');
 const { sendEmail } = require('~/server/utils');
 
@@ -367,6 +372,7 @@ async function reserveUsage({
         }
         return scope.limit <= inputReservation;
       }) ?? scopes.find((scope) => scope.limit != null);
+    recordQuotaDenial(limitingScope?.scopeType ?? 'institution');
     throw new QuotaError({
       scope: limitingScope?.scopeType ?? 'institution',
       modelKey: limitingScope?.scopeType === 'model' ? canonical.modelKey : undefined,
@@ -600,6 +606,7 @@ async function reconcileExpiredReservations({ limit = 100 } = {}) {
       reconciled += 1;
     }
   }
+  recordReservationExpiry(reconciled);
   return { inspected: stale.length, reconciled };
 }
 

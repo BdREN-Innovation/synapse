@@ -35,4 +35,24 @@ usageReservationSchema.index(
 );
 usageReservationSchema.index({ tenantId: 1, periodStart: 1, modelKey: 1 });
 
+/**
+ * One reservation is written per model call, so this collection grows with
+ * traffic and nothing else prunes it.
+ *
+ * Aging them out is safe: the ledger — not this collection — is the record of
+ * usage, and bucket reconciliation derives the periods it repairs *from* these
+ * rows, so a period with no surviving reservations is simply never revisited
+ * rather than recomputed to zero. The readiness report only looks back seven
+ * days, well inside the default.
+ *
+ * Set `USAGE_RESERVATION_RETENTION_DAYS=0` to retain indefinitely.
+ */
+const retentionDays = Number(process.env.USAGE_RESERVATION_RETENTION_DAYS ?? 90);
+if (Number.isFinite(retentionDays) && retentionDays > 0) {
+  usageReservationSchema.index(
+    { createdAt: 1 },
+    { expireAfterSeconds: Math.round(retentionDays * 24 * 60 * 60) },
+  );
+}
+
 export default usageReservationSchema;
