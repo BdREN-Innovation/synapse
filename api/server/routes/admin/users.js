@@ -1,6 +1,7 @@
 const express = require('express');
 const { SystemCapabilities } = require('@librechat/data-schemas');
 const { requireCapability } = require('~/server/middleware/roles/capabilities');
+const { resolveAdminTenant, requireTenant } = require('~/server/middleware/adminTenant');
 const { requireJwtAuth } = require('~/server/middleware');
 const {
   HttpError,
@@ -36,9 +37,10 @@ function parsePagination(query) {
 }
 
 function buildAuditContext(req) {
-  const forwarded = typeof req.headers['x-forwarded-for'] === 'string'
-    ? req.headers['x-forwarded-for'].split(',')[0]?.trim()
-    : undefined;
+  const forwarded =
+    typeof req.headers['x-forwarded-for'] === 'string'
+      ? req.headers['x-forwarded-for'].split(',')[0]?.trim()
+      : undefined;
 
   return {
     ip: req.ip || forwarded || req.socket?.remoteAddress,
@@ -62,16 +64,7 @@ function handleError(res, error, fallback) {
   return res.status(500).json({ error: fallback });
 }
 
-function requireTenant(req, res) {
-  const tenantId = req.user?.tenantId;
-  if (!tenantId) {
-    res.status(403).json({ error: 'Institution admin access requires a tenant context' });
-    return null;
-  }
-  return tenantId;
-}
-
-router.use(requireJwtAuth, requireAdminAccess);
+router.use(requireJwtAuth, requireAdminAccess, resolveAdminTenant);
 
 router.get('/', requireReadUsers, async (req, res) => {
   const tenantId = requireTenant(req, res);

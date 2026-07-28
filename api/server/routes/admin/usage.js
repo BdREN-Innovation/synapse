@@ -16,14 +16,7 @@ const router = express.Router();
 const requireAdminAccess = requireCapability(SystemCapabilities.ACCESS_ADMIN);
 const requireReadUsage = requireCapability(SystemCapabilities.READ_USAGE);
 
-function requireTenant(req, res) {
-  const tenantId = req.user?.tenantId;
-  if (!tenantId) {
-    res.status(403).json({ error: 'Institution admin access requires a tenant context' });
-    return null;
-  }
-  return tenantId;
-}
+const { resolveAdminTenant, requireTenant } = require('~/server/middleware/adminTenant');
 
 function handleError(res, error, fallback) {
   if (error instanceof HttpError) {
@@ -32,7 +25,7 @@ function handleError(res, error, fallback) {
   return res.status(500).json({ error: fallback });
 }
 
-router.use(requireJwtAuth, requireAdminAccess, requireReadUsage);
+router.use(requireJwtAuth, requireAdminAccess, requireReadUsage, resolveAdminTenant);
 
 router.get('/summary', async (req, res) => {
   const tenantId = requireTenant(req, res);
