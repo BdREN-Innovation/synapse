@@ -43,7 +43,7 @@ a first-time provision, not a redeploy.
         │                         ↑ firewall: .213 only
    ┌────┴─────┬──────────┐             │
    │          │          │        Docker stack
- LibreChat  Admin      static      (api, sandbox,
+ Synapse    Admin      static      (api, sandbox,
  :3080      :3000      assets       redis, minio…)
    │          │                    all loopback-bound
    └────┬─────┘
@@ -198,8 +198,8 @@ Create the application user **before** enabling auth:
 
 ```bash
 mongosh --eval 'db.getSiblingDB("admin").createUser({
-  user: "librechat", pwd: "REPLACE_STRONG_PASSWORD",
-  roles: [{role: "readWrite", db: "LibreChat"}, {role: "clusterMonitor", db: "admin"}]
+  user: "synapse", pwd: "REPLACE_STRONG_PASSWORD",
+  roles: [{role: "readWrite", db: "Synapse"}, {role: "clusterMonitor", db: "admin"}]
 })'
 ```
 
@@ -224,9 +224,9 @@ EOF
 #       cacheSizeGB: 12
 
 sudo systemctl restart mongod
-mongosh -u librechat -p --authenticationDatabase admin \
+mongosh -u synapse -p --authenticationDatabase admin \
   --eval 'rs.initiate({_id:"rs0",members:[{_id:0,host:"127.0.0.1:27017"}]})'
-mongosh -u librechat -p --authenticationDatabase admin --eval 'rs.status().myState'   # expect 1
+mongosh -u synapse -p --authenticationDatabase admin --eval 'rs.status().myState'   # expect 1
 ```
 
 `mongod` binds to `127.0.0.1` by default — keep it that way.
@@ -274,7 +274,7 @@ cd /opt/synapse-admin && bun install && bun run build
 ```
 
 `.env` needs `SESSION_SECRET` (32+ chars — `bun run start` refuses to boot
-without it; the dev fallback only applies to `bun run dev`) and the LibreChat API
+without it; the dev fallback only applies to `bun run dev`) and the Synapse API
 base URL.
 
 ### 5.7 PM2
@@ -285,7 +285,7 @@ base URL.
 module.exports = {
   apps: [
     {
-      name: 'librechat',
+      name: 'synapse',
       script: 'api/server/index.js',
       cwd: '/opt/synapse',
       instances: 2,               // see §6.2 before increasing
@@ -316,7 +316,7 @@ pm2 start /opt/synapse/ecosystem.config.js && pm2 save
 sudo apt install -y nginx certbot python3-certbot-nginx
 
 sudo tee /etc/nginx/sites-available/synapse > /dev/null <<'EOF'
-upstream librechat {
+upstream synapse {
     server 127.0.0.1:3080;
     keepalive 64;                       # reuse connections; avoids per-request TCP setup
 }
@@ -331,7 +331,7 @@ server {
     gzip_min_length 1024;
 
     location / {
-        proxy_pass http://librechat;
+        proxy_pass http://synapse;
         proxy_http_version 1.1;
         proxy_set_header Upgrade $http_upgrade;
         proxy_set_header Connection "upgrade";
@@ -436,11 +436,29 @@ stable — it is additive and needs no migration.
 |---|---|---|
 | `DOMAIN_CLIENT` | `http://localhost:3090` | `https://chat.bdren.ai` |
 | `DOMAIN_SERVER` | `http://localhost:3080` | `https://chat.bdren.ai` |
-| `MONGO_URI` | `mongodb://127.0.0.1:27017/LibreChat` | `mongodb://librechat:PASS@127.0.0.1:27017/LibreChat?replicaSet=rs0&authSource=admin` |
+| `MONGO_URI` | `mongodb://127.0.0.1:27017/LibreChat` | `mongodb://synapse:PASS@127.0.0.1:27017/Synapse?replicaSet=rs0&authSource=admin` |
 | `LIBRECHAT_CODE_BASEURL` | `http://127.0.0.1:3112/v1` | `https://interpreter.bdren.ai/v1` |
 | `ADMIN_PANEL_URL` | `http://localhost:3000` | per §3.3 |
 | `NODE_ENV` | — | `production` |
 | `USE_REDIS`, `REDIS_URI` | unset | §6.2 |
+| `LIBRECHAT_LOG_DIR` | unset | `/opt/synapse/api/logs` |
+
+Two naming notes:
+
+- **`LIBRECHAT_LOG_DIR` keeps its name** — it is read by
+  `@librechat/data-schemas`, so renaming the variable would simply stop working.
+  Set it explicitly: with it unset the package picks the log directory by testing
+  whether the working directory path contains "LibreChat", and `/opt/synapse`
+  does not, so logs would land somewhere non-obvious.
+- **The production database is `Synapse`, while dev is `LibreChat`.** Restoring a
+  dev dump into production (or the reverse) therefore needs an explicit namespace
+  mapping — `mongorestore` will otherwise recreate the source database name
+  alongside the real one:
+
+  ```bash
+  mongorestore --uri "$MONGO_URI" --archive=dump.gz --gzip \
+    --nsFrom 'LibreChat.*' --nsTo 'Synapse.*'
+  ```
 
 **Regenerate, do not copy:** `JWT_SECRET`, `JWT_REFRESH_SECRET`, `CREDS_KEY`,
 `CREDS_IV`, `MEILI_MASTER_KEY`, `METRICS_SECRET`, and the admin panel's
@@ -483,7 +501,7 @@ curl -sI https://chat.bdren.ai | grep -i "^HTTP\|strict-transport"
 curl -s -o /dev/null -w '%{http_code}\n' https://chat.bdren.ai/metrics          # 401
 curl -s -o /dev/null -w '%{http_code}\n' -H "Authorization: Bearer $METRICS_SECRET" \
   https://chat.bdren.ai/metrics                                                  # 200
-pm2 logs librechat --lines 50 | grep -i "institution model is not registered"    # expect none
+pm2 logs synapse --lines 50 | grep -i "institution model is not registered"    # expect none
 ```
 
 Then, by hand: log in as the superadmin, open the platform console, invite a test
@@ -497,7 +515,7 @@ sandbox → file back — which nothing else covers.
 
 ```bash
 cd /opt/synapse && git log --oneline -5
-git checkout <previous-sha> && npx turbo build --force && pm2 restart librechat
+git checkout <previous-sha> && npx turbo build --force && pm2 restart synapse
 ```
 
 No migration in this release destroys data — the policy migration only adds rows

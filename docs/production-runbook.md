@@ -43,7 +43,7 @@ git fetch origin && git checkout bdren-prod && git pull
 npm run smart-reinstall          # installs if the lockfile moved, then builds
 node config/migrate-usage-policies.js --dry-run
 node config/migrate-usage-policies.js        # only if the dry run is clean
-pm2 restart librechat && pm2 logs librechat --lines 50
+pm2 restart synapse && pm2 logs synapse --lines 50
 ```
 
 Two ordering rules that are easy to get wrong:
@@ -68,7 +68,7 @@ cd /opt/synapse
 git log --oneline -5                 # note the previous good SHA
 git checkout <previous-sha>
 npx turbo build --force
-pm2 restart librechat
+pm2 restart synapse
 ```
 
 No schema migration in this release destroys data — the policy migration only
@@ -94,7 +94,7 @@ mongodump --uri "$MONGO_URI" --archive=/backup/synapse-$(date +%F).gz --gzip
 
 # restore into a scratch database first — never straight over production
 mongorestore --uri "$MONGO_URI" --archive=/backup/synapse-2026-07-28.gz --gzip \
-  --nsFrom 'LibreChat.*' --nsTo 'LibreChat_restore.*'
+  --nsFrom 'Synapse.*' --nsTo 'Synapse_restore.*'
 ```
 
 Drill quarterly and record the restore duration; an untested backup is not a
