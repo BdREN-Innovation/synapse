@@ -34,6 +34,14 @@ export enum SystemRoles {
   USER = 'USER',
 }
 
+/**
+ * Tenant-scoped institution administrator. Declared here rather than imported
+ * from `@librechat/data-schemas`, whose barrel pulls in Node-only modules and
+ * cannot be used for runtime values in client code. Kept in sync with
+ * `INSTITUTION_ADMIN_ROLE` there.
+ */
+export const INSTITUTION_ADMIN_ROLE = 'INSTITUTION_ADMIN';
+
 export const roleSchema = z.object({
   name: z.string(),
   permissions: permissionsSchema,

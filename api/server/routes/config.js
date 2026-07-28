@@ -83,6 +83,9 @@ function buildPreLoginPayload() {
     samlLabel: process.env.SAML_BUTTON_LABEL,
     samlImageUrl: process.env.SAML_IMAGE_URL,
     serverDomain: process.env.DOMAIN_SERVER || 'http://localhost:3080',
+    /** Surfaced so the account menu can link administrators to the console.
+     *  Presence alone reveals nothing: the panel enforces its own auth. */
+    adminPanelPath: process.env.ADMIN_PANEL_PATH || undefined,
     emailLoginEnabled,
     registrationEnabled: !ldap?.enabled && isEnabled(process.env.ALLOW_REGISTRATION),
     socialLoginEnabled: isEnabled(process.env.ALLOW_SOCIAL_LOGIN),

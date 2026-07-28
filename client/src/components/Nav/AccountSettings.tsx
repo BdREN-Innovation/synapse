@@ -16,6 +16,7 @@ import {
 import { ArchivedChatsModal } from '~/components/Nav/SettingsTabs/General/ArchivedChatsModal';
 import { MyFilesModal } from '~/components/Chat/Input/Files/MyFilesModal';
 import { useGetStartupConfig, useGetUserBalance } from '~/data-provider';
+import { SystemRoles, INSTITUTION_ADMIN_ROLE } from 'librechat-data-provider';
 import { useAuthContext } from '~/hooks/AuthContext';
 import { useLocalize } from '~/hooks';
 import Settings from './Settings';
@@ -105,6 +106,13 @@ function AccountSettings({ collapsed = false }: { collapsed?: boolean }) {
   const [showArchived, setShowArchived] = useState(false);
   const accountSettingsButtonRef = useRef<HTMLButtonElement>(null);
 
+  /** Institution administrators manage their members from the same console as
+   *  platform staff, so the entry is offered to both. The console enforces its
+   *  own authorization — this only decides whether the link is worth showing. */
+  const showAdminPanel =
+    !!startupConfig?.adminPanelPath &&
+    (user?.role === SystemRoles.ADMIN || user?.role === INSTITUTION_ADMIN_ROLE);
+
   return (
     <Menu.MenuProvider placement={collapsed ? 'right-end' : undefined}>
       <Menu.MenuButton
@@ -164,6 +172,16 @@ function AccountSettings({ collapsed = false }: { collapsed?: boolean }) {
           <FileText className="icon-md" aria-hidden="true" />
           {localize('com_nav_my_files')}
         </Menu.MenuItem>
+        {showAdminPanel && (
+          <Menu.MenuItem
+            onClick={() => window.open(startupConfig?.adminPanelPath, '_blank', 'noopener')}
+            className="select-item text-sm"
+            data-testid="nav-admin-panel"
+          >
+            <ShieldCheck className="icon-md" aria-hidden="true" />
+            {localize('com_nav_admin_panel')}
+          </Menu.MenuItem>
+        )}
         <Menu.MenuItem onClick={() => setShowArchived(true)} className="select-item text-sm">
           <Archive className="icon-md" aria-hidden="true" />
           {localize('com_nav_archived_chats')}
