@@ -79,6 +79,56 @@ function getBaseMatch(range) {
   };
 }
 
+/**
+ * Canonical provider for a ledger row, resolved in the pipeline.
+ *
+ * Rows written before provider attribution was mandatory carry no
+ * `providerKey`, and older ones carry mixed casing ("openAI" vs "openai").
+ * Grouping on the raw field splits one model across several rows and labels
+ * half of them "unknown", so it is normalized on read rather than requiring a
+ * backfill of historical usage.
+ */
+function providerKeyExpr() {
+  const model = { $toLower: { $ifNull: ['$providerModelId', { $ifNull: ['$model', ''] }] } };
+  return {
+    $let: {
+      vars: {
+        declared: { $toLower: { $trim: { input: { $ifNull: ['$providerKey', ''] } } } },
+        model,
+      },
+      in: {
+        $switch: {
+          branches: [
+            { case: { $ne: ['$$declared', ''] }, then: '$$declared' },
+            {
+              case: {
+                $regexMatch: { input: '$$model', regex: '^(gpt-|o1|o3|o4|chat-latest)' },
+              },
+              then: 'openai',
+            },
+            { case: { $regexMatch: { input: '$$model', regex: '^claude-' } }, then: 'anthropic' },
+            {
+              case: { $regexMatch: { input: '$$model', regex: '^(gemini|gemma)' } },
+              then: 'google',
+            },
+            { case: { $regexMatch: { input: '$$model', regex: '^grok-' } }, then: 'xai' },
+          ],
+          default: 'unknown',
+        },
+      },
+    },
+  };
+}
+
+/**
+ * The model as the operator recognises it. `modelKey` is a pricing bucket and
+ * can be coarser than reality (gpt-5.6-luna prices as gpt-5), which reads as a
+ * phantom model in a usage report.
+ */
+function modelIdExpr() {
+  return { $ifNull: ['$providerModelId', { $ifNull: ['$model', 'unknown'] }] };
+}
+
 function getTokenProjection() {
   return {
     promptTokens: {
@@ -111,7 +161,7 @@ async function getUsageSummary({ tenantId, start, end }) {
           _id: null,
           ...getTokenProjection(),
           members: { $addToSet: '$user' },
-          models: { $addToSet: { $ifNull: ['$modelKey', '$model'] } },
+          models: { $addToSet: modelIdExpr() },
         },
       },
       {
@@ -240,9 +290,9 @@ async function listUsageByModel({ tenantId, start, end, limit, offset, query }) 
       {
         $group: {
           _id: {
-            providerKey: { $ifNull: ['$providerKey', 'unknown'] },
-            modelKey: { $ifNull: ['$modelKey', '$model'] },
-            providerModelId: { $ifNull: ['$providerModelId', '$model'] },
+            providerKey: providerKeyExpr(),
+            modelKey: modelIdExpr(),
+            providerModelId: modelIdExpr(),
           },
           ...getTokenProjection(),
           memberIds: { $addToSet: '$user' },
@@ -369,9 +419,9 @@ async function exportUsageCsv({ tenantId, start, end }) {
           memberEmail: '$user.email',
           memberRole: '$user.role',
           membershipStatus: '$user.membershipStatus',
-          providerKey: '$providerKey',
-          modelKey: { $ifNull: ['$modelKey', '$model'] },
-          providerModelId: '$providerModelId',
+          providerKey: providerKeyExpr(),
+          modelKey: modelIdExpr(),
+          providerModelId: modelIdExpr(),
           tokenType: 1,
           promptTokens: {
             $cond: [{ $eq: ['$tokenType', 'prompt'] }, { $abs: { $ifNull: ['$rawAmount', 0] } }, 0],
