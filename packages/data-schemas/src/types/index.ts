@@ -41,6 +41,7 @@ export * from './usagePolicy';
 export * from './usageBucket';
 export * from './usageReservation';
 export * from './usageWarning';
+export * from './adminScopeAssignment';
 /* Config */
 export * from './config';
 /* Admin */

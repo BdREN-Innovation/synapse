@@ -38,3 +38,4 @@ export { default as usagePolicySchema } from './usagePolicy';
 export { default as usageBucketSchema } from './usageBucket';
 export { default as usageReservationSchema } from './usageReservation';
 export { default as usageWarningSchema } from './usageWarning';
+export { default as adminScopeAssignmentSchema } from './adminScopeAssignment';

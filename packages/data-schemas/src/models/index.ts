@@ -42,6 +42,7 @@ import { createUsagePolicyModel } from './usagePolicy';
 import { createUsageBucketModel } from './usageBucket';
 import { createUsageReservationModel } from './usageReservation';
 import { createUsageWarningModel } from './usageWarning';
+import { createAdminScopeAssignmentModel } from './adminScopeAssignment';
 
 /**
  * Creates all database models for all collections
@@ -91,6 +92,7 @@ export function createModels(mongoose: typeof import('mongoose')): {
   UsageBucket: ReturnType<typeof createUsageBucketModel>;
   UsageReservation: ReturnType<typeof createUsageReservationModel>;
   UsageWarning: ReturnType<typeof createUsageWarningModel>;
+  AdminScopeAssignment: ReturnType<typeof createAdminScopeAssignmentModel>;
 } {
   return {
     User: createUserModel(mongoose),
@@ -137,5 +139,6 @@ export function createModels(mongoose: typeof import('mongoose')): {
     UsageBucket: createUsageBucketModel(mongoose),
     UsageReservation: createUsageReservationModel(mongoose),
     UsageWarning: createUsageWarningModel(mongoose),
+    AdminScopeAssignment: createAdminScopeAssignmentModel(mongoose),
   };
 }

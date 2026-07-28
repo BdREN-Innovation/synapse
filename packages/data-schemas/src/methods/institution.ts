@@ -32,6 +32,7 @@ export interface InstitutionMethods {
     fieldsToSelect?: string | string[] | null,
   ) => Promise<IInstitution | null>;
   createInstitution: (data: Partial<IInstitution>) => Promise<IInstitution>;
+  deleteInstitutionByTenantId: (tenantId: string) => Promise<boolean>;
   updateInstitutionByTenantId: (
     tenantId: string,
     updates: Partial<IInstitution>,
@@ -43,9 +44,7 @@ export interface InstitutionMethods {
   reactivateInstitution: (tenantId: string) => Promise<IInstitution | null>;
 }
 
-export function createInstitutionMethods(
-  mongoose: typeof import('mongoose'),
-): InstitutionMethods {
+export function createInstitutionMethods(mongoose: typeof import('mongoose')): InstitutionMethods {
   const getModel = () => mongoose.models.Institution as Model<IInstitution>;
 
   async function listInstitutions(options?: {
@@ -88,6 +87,17 @@ export function createInstitutionMethods(
       slug: data.slug?.trim(),
       name: data.name?.trim(),
     });
+  }
+
+  /**
+   * Removes an institution row outright. Intended for compensating a failed
+   * provisioning attempt, where the row was written but no administrator could
+   * be appointed; the unique `tenantId` would otherwise make every retry
+   * collide with a half-created institution.
+   */
+  async function deleteInstitutionByTenantId(tenantId: string): Promise<boolean> {
+    const result = await getModel().deleteOne({ tenantId: tenantId?.trim() }).exec();
+    return (result?.deletedCount ?? 0) > 0;
   }
 
   async function updateInstitutionByTenantId(
@@ -156,6 +166,7 @@ export function createInstitutionMethods(
     countInstitutions,
     getInstitutionByTenantId,
     createInstitution,
+    deleteInstitutionByTenantId,
     updateInstitutionByTenantId,
     suspendInstitution,
     reactivateInstitution,

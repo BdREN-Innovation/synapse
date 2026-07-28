@@ -1,5 +1,5 @@
 const express = require('express');
-const { logger, runAsSystem } = require('@librechat/data-schemas');
+const { logger, runAsSystem, INSTITUTION_ADMIN_ROLE } = require('@librechat/data-schemas');
 const { requireJwtAuth } = require('~/server/middleware');
 const requirePlatformSuperadmin = require('~/server/middleware/platformAdmin');
 const {
@@ -10,6 +10,7 @@ const {
 const {
   assertSeatLimitChangeAllowed,
   createInstitutionInvite,
+  listInstitutionMembers,
   HttpError,
 } = require('~/server/services/institutionMembers');
 const db = require('~/models');
@@ -91,6 +92,26 @@ async function recordPlatformAudit(req, { action, target, metadata, outcome, sev
   );
 }
 
+/**
+ * A seat limit of zero or below cannot be satisfied by any member, so it would
+ * silently brick onboarding for that institution; `null` is the explicit way to
+ * say "unlimited". `findOneAndUpdate` does not run schema validators, so the
+ * schema's own `min: 1` never fires on an update and this is the only guard.
+ */
+function normalizeSeatLimit(value) {
+  if (value === null) {
+    return null;
+  }
+  const parsed = typeof value === 'number' ? value : Number(value);
+  if (!Number.isInteger(parsed) || parsed < 1) {
+    throw new HttpError(
+      400,
+      'limits.maxActiveMembers must be a positive whole number, or null for unlimited',
+    );
+  }
+  return parsed;
+}
+
 /** Keeps only allowlisted institution fields, dropping everything else. */
 function pickInstitutionUpdates(body) {
   const updates = {};
@@ -103,7 +124,10 @@ function pickInstitutionUpdates(body) {
     const limits = {};
     for (const field of INSTITUTION_UPDATABLE_LIMITS) {
       if (body.limits[field] !== undefined) {
-        limits[field] = body.limits[field];
+        limits[field] =
+          field === 'maxActiveMembers'
+            ? normalizeSeatLimit(body.limits[field])
+            : body.limits[field];
       }
     }
     if (Object.keys(limits).length > 0) {
@@ -250,15 +274,37 @@ router.post('/', async (req, res) => {
       metadata: { slug: institution.slug ?? null, limits: institution.limits ?? null },
     });
 
-    await ensureInstitutionAdminRole(tenantId);
-    const adminResult = await resolveInstitutionAdminTarget({
-      tenantId,
-      userId: adminUserId,
-      email: adminEmail,
-      name: adminName,
-      actor: req.user,
-      context: buildAuditContext(req),
-    });
+    /**
+     * An institution with no administrator cannot be administered, and the
+     * unique tenantId means a retry would collide with the row just written.
+     * Roll the institution back so the operator can simply try again.
+     */
+    let adminResult;
+    try {
+      await ensureInstitutionAdminRole(tenantId);
+      adminResult = await resolveInstitutionAdminTarget({
+        tenantId,
+        userId: adminUserId,
+        email: adminEmail,
+        name: adminName,
+        actor: req.user,
+        context: buildAuditContext(req),
+      });
+    } catch (error) {
+      await runAsSystem(() => db.deleteInstitutionByTenantId(tenantId)).catch((cleanupError) => {
+        logger.error(
+          '[platform/institutions] failed to roll back institution after admin appointment failed',
+          { tenantId, cleanupError },
+        );
+      });
+      await recordPlatformAudit(req, {
+        action: 'institution.create_rolled_back',
+        target: { type: 'institution', id: tenantId, name },
+        metadata: { reason: error?.message ?? 'admin appointment failed' },
+        outcome: 'failure',
+      });
+      throw error;
+    }
 
     if (adminResult.user) {
       await recordPlatformAudit(req, {
@@ -627,6 +673,26 @@ router.delete('/:tenantId/admins/:userId', async (req, res) => {
     const institution = await runAsSystem(() => db.getInstitutionByTenantId(tenantId));
     if (!institution) {
       return res.status(404).json({ error: 'Institution not found' });
+    }
+
+    /** An institution with no administrator can only be repaired by a platform
+     *  superadmin, so refuse to remove the last one. */
+    const admins = await listInstitutionMembers({
+      tenantId,
+      limit: 2,
+      offset: 0,
+      status: 'active',
+      role: INSTITUTION_ADMIN_ROLE,
+    });
+    const activeAdmins = admins?.members ?? [];
+    const isLastAdmin =
+      activeAdmins.length <= 1 &&
+      activeAdmins.some((member) => String(member.id) === String(userId));
+    if (isLastAdmin) {
+      return res.status(409).json({
+        error:
+          'This is the only active administrator for the institution. Appoint another administrator before revoking this one.',
+      });
     }
 
     const user = await revokeInstitutionAdmin({ tenantId, userId });

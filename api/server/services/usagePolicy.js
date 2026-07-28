@@ -59,11 +59,19 @@ function normalizePolicyInput(input, fallback) {
     });
   }
   const thresholds = input.warningThresholds ?? fallback.warningThresholds ?? [0.8, 0.9];
+  /** NaN is a `number` and fails every comparison, so it slips past a naive
+   *  range check and then makes `utilization < threshold` false forever —
+   *  emitting a warning on the first request of every period. */
   if (
     !Array.isArray(thresholds) ||
-    thresholds.some((value) => typeof value !== 'number' || value <= 0 || value >= 1)
+    thresholds.length > 10 ||
+    thresholds.some((value) => !Number.isFinite(value) || value <= 0 || value >= 1)
   ) {
-    throw new PolicyError(400, 'INVALID_POLICY', 'Warning thresholds must be between 0 and 1');
+    throw new PolicyError(
+      400,
+      'INVALID_POLICY',
+      'Warning thresholds must be up to 10 finite numbers strictly between 0 and 1',
+    );
   }
   return {
     mode,
