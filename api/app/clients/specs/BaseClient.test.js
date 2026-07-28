@@ -1,4 +1,12 @@
 const { Constants } = require('librechat-data-provider');
+const mockReserveUsage = jest.fn();
+const mockSettleUsage = jest.fn();
+const mockReleaseUsage = jest.fn();
+jest.mock('~/server/services/usageQuota', () => ({
+  reserveUsage: (...args) => mockReserveUsage(...args),
+  settleUsage: (...args) => mockSettleUsage(...args),
+  releaseUsage: (...args) => mockReleaseUsage(...args),
+}));
 const { FakeClient, initializeFakeClient } = require('./FakeClient');
 
 jest.mock('~/db/connect');
@@ -79,6 +87,19 @@ describe('BaseClient', () => {
   };
 
   beforeEach(() => {
+    mockReserveUsage.mockReset();
+    mockSettleUsage.mockReset();
+    mockReleaseUsage.mockReset();
+    mockReserveUsage.mockResolvedValue({
+      outputTokenCap: 4096,
+      outputCapped: false,
+      canonical: { modelKey: 'gpt-4o-mini' },
+    });
+    delete options.req;
+    delete options.res;
+    delete options.agent;
+    delete options.endpoint;
+    delete options.endpointType;
     TestClient = initializeFakeClient(apiKey, options, fakeMessages);
     TestClient.summarizeMessages = jest.fn().mockResolvedValue({
       summaryMessage: {
@@ -87,6 +108,46 @@ describe('BaseClient', () => {
       },
       summaryTokenCount: 5,
     });
+  });
+
+  test('reserves and settles tenant quota and persists an output-cap event', async () => {
+    mockReserveUsage.mockResolvedValue({
+      outputTokenCap: 25,
+      outputCapped: true,
+      canonical: { modelKey: 'gpt-4o-mini' },
+    });
+    TestClient.options.req = {
+      user: { id: 'user-1', tenantId: 'tenant-a' },
+      body: { max_tokens: 100 },
+    };
+    TestClient.options.res = { setHeader: jest.fn() };
+    TestClient.user = 'user-1';
+    TestClient.model = 'gpt-4o-mini';
+    TestClient.options.endpoint = 'openAI';
+    TestClient.options.endpointType = 'openAI';
+    TestClient.options.agent = { model_parameters: { max_output_tokens: 100 } };
+    TestClient.saveMessageToDatabase = jest.fn().mockResolvedValue({ message: {} });
+
+    const response = await TestClient.sendMessage('Hello');
+
+    expect(mockReserveUsage).toHaveBeenCalledWith(
+      expect.objectContaining({
+        tenantId: 'tenant-a',
+        userId: 'user-1',
+        requestedOutputTokens: 100,
+      }),
+    );
+    expect(mockSettleUsage).toHaveBeenCalledTimes(1);
+    expect(TestClient.options.agent.model_parameters.max_output_tokens).toBe(25);
+    expect(response.metadata.quota).toEqual({
+      event: 'QUOTA_OUTPUT_CAPPED',
+      outputTokenCap: 25,
+      modelKey: 'gpt-4o-mini',
+    });
+    expect(TestClient.options.res.setHeader).toHaveBeenCalledWith(
+      'X-Quota-Event',
+      'QUOTA_OUTPUT_CAPPED',
+    );
   });
 
   test('returns the input messages without instructions when addInstructions() is called with empty instructions', () => {

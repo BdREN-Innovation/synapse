@@ -1,4 +1,10 @@
 import type { PrincipalType, PrincipalModel, TCustomConfig } from 'librechat-data-provider';
+import type {
+  InstitutionImportJobStatus,
+  InstitutionInviteSource,
+  InstitutionInviteStatus,
+  InstitutionMembershipStatus,
+} from '~/common';
 import type { SystemCapabilities } from '~/admin/capabilities';
 
 /* ── Capability types ───────────────────────────────────────────────── */
@@ -75,6 +81,7 @@ export type AdminConfigDeleteResponse = {
  */
 export const AUDIT_CATEGORIES = [
   'grant',
+  'member',
   'agent_run',
   'tool_call',
   'mcp',
@@ -82,6 +89,8 @@ export const AUDIT_CATEGORIES = [
   'permission',
   'auth',
   'approval',
+  'institution',
+  'platform',
 ] as const;
 export type AuditCategory = (typeof AUDIT_CATEGORIES)[number];
 
@@ -91,13 +100,62 @@ export type AuditCategory = (typeof AUDIT_CATEGORIES)[number];
  * action maps unambiguously to a category. The Mongoose schema enum and the
  * HTTP handler's whitelist both consume this constant so they cannot drift.
  */
-export const AUDIT_ACTIONS = ['grant.assigned', 'grant.removed'] as const;
+export const AUDIT_ACTIONS = [
+  'grant.assigned',
+  'grant.removed',
+  'member.invited',
+  'member.invite_resent',
+  'member.invite_revoked',
+  'member.suspended',
+  'member.reactivated',
+  'member.role_changed',
+  'member.removed',
+  'member.imported',
+  'member.seat_limit_rejected',
+  'member.import_started',
+  'member.import_completed',
+  'member.import_failed',
+  'institution.created',
+  'institution.updated',
+  'institution.suspended',
+  'institution.reactivated',
+  'institution.seat_limit_changed',
+  'institution.seat_limit_rejected',
+  'institution.admin_appointed',
+  'institution.admin_revoked',
+  'platform_admin.granted',
+  'platform_admin.deactivated',
+  'platform_admin.reactivated',
+] as const;
 export type AuditAction = (typeof AUDIT_ACTIONS)[number];
 
 /** Maps each action to its category so writers never pass both. */
 export const AUDIT_ACTION_CATEGORY: Record<AuditAction, AuditCategory> = {
   'grant.assigned': 'grant',
   'grant.removed': 'grant',
+  'member.invited': 'member',
+  'member.invite_resent': 'member',
+  'member.invite_revoked': 'member',
+  'member.suspended': 'member',
+  'member.reactivated': 'member',
+  'member.role_changed': 'member',
+  'member.removed': 'member',
+  'member.imported': 'member',
+  'member.seat_limit_rejected': 'member',
+  'member.import_started': 'member',
+  'member.import_completed': 'member',
+  'member.import_failed': 'member',
+  'institution.created': 'institution',
+  'institution.updated': 'institution',
+  'institution.suspended': 'institution',
+  'institution.reactivated': 'institution',
+  'institution.seat_limit_changed': 'institution',
+  'institution.seat_limit_rejected': 'institution',
+  'institution.admin_appointed': 'institution',
+  'institution.admin_revoked': 'institution',
+  'platform_admin.granted': 'platform',
+  'platform_admin.deactivated': 'platform',
+  'platform_admin.reactivated': 'platform',
 };
 
 /** Result of the audited operation. Kept first-class instead of being encoded
@@ -238,4 +296,70 @@ export type AdminUserSearchResult = {
   email: string;
   username?: string;
   avatarUrl?: string;
+};
+
+export type AdminInstitutionRole = 'USER' | 'INSTITUTION_ADMIN';
+
+export type AdminInstitutionMemberStatus = InstitutionMembershipStatus | 'invited';
+
+export type AdminInstitutionMemberListItem = {
+  id: string;
+  kind: 'user' | 'invite';
+  name: string;
+  email: string;
+  role: AdminInstitutionRole;
+  status: AdminInstitutionMemberStatus;
+  provider?: string;
+  createdAt?: string;
+  updatedAt?: string;
+  inviteStatus?: InstitutionInviteStatus;
+  inviteSource?: InstitutionInviteSource;
+  lastSentAt?: string;
+  expiresAt?: string;
+};
+
+export type AdminInstitutionSeatSummary = {
+  activeMembers: number;
+  maxActiveMembers?: number | null;
+  pendingInvites: number;
+};
+
+export type AdminInstitutionMembersResponse = {
+  members: AdminInstitutionMemberListItem[];
+  total: number;
+  limit: number;
+  offset: number;
+  summary: AdminInstitutionSeatSummary;
+};
+
+export type AdminInstitutionMemberDetail = AdminInstitutionMemberListItem & {
+  suspendedAt?: string | null;
+  removedAt?: string | null;
+  acceptedAt?: string | null;
+};
+
+export type AdminInstitutionImportRowResult = {
+  rowNumber: number;
+  email?: string;
+  name?: string;
+  requestedRole?: AdminInstitutionRole;
+  action: 'invite' | 'update_member' | 'skip' | 'error';
+  message: string;
+};
+
+export type AdminInstitutionImportJob = {
+  id: string;
+  tenantId: string;
+  idempotencyKey: string;
+  status: InstitutionImportJobStatus;
+  summary: {
+    totalRows: number;
+    invitesCreated: number;
+    membersUpdated: number;
+    skipped: number;
+    errors: number;
+  };
+  results: AdminInstitutionImportRowResult[];
+  createdAt?: string;
+  updatedAt?: string;
 };

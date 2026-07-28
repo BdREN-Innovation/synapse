@@ -2,7 +2,16 @@ const undici = require('undici');
 const fetch = require('node-fetch');
 const jwtDecode = require('jsonwebtoken/decode');
 const { ErrorTypes, FileSources } = require('librechat-data-provider');
-const { findUser, createUser, updateUser, findRolesByNames } = require('~/models');
+const { INSTITUTION_ADMIN_ROLE } = require('@librechat/data-schemas');
+const {
+  findUser,
+  createUser,
+  updateUser,
+  findRolesByNames,
+  getRoleByName,
+  createRoleByName,
+  grantCapability,
+} = require('~/models');
 const {
   getOpenIdProxyDispatcher,
   resolveAppConfigForUser,
@@ -100,9 +109,12 @@ jest.mock('~/models', () => ({
   createUser: jest.fn(),
   updateUser: jest.fn(),
   findRolesByNames: jest.fn(),
+  getRoleByName: jest.fn(),
+  createRoleByName: jest.fn(),
+  grantCapability: jest.fn(),
 }));
 jest.mock('@librechat/data-schemas', () => ({
-  ...jest.requireActual('@librechat/api'),
+  ...jest.requireActual('@librechat/data-schemas'),
   logger: {
     info: jest.fn(),
     warn: jest.fn(),
@@ -276,6 +288,9 @@ describe('setupOpenId', () => {
     findRolesByNames.mockImplementation(async (roleNames) =>
       roleNames.map((roleName) => ({ name: roleName })),
     );
+    getRoleByName.mockResolvedValue({ name: INSTITUTION_ADMIN_ROLE, permissions: {} });
+    createRoleByName.mockResolvedValue({ name: INSTITUTION_ADMIN_ROLE, permissions: {} });
+    grantCapability.mockResolvedValue(undefined);
 
     resizeAvatar.mockResolvedValue(Buffer.from('safe avatar'));
 
@@ -1175,7 +1190,7 @@ describe('setupOpenId', () => {
 
       const { user } = await validate(tokenset);
 
-      expect(user.role).toBe('ADMIN');
+      expect(user.role).toBe(INSTITUTION_ADMIN_ROLE);
     });
 
     it('does not grant admin when overage groups do not contain admin role', async () => {
@@ -1245,7 +1260,7 @@ describe('setupOpenId', () => {
         openidId: tokenset.claims().sub,
         username: 'adminuser',
         name: 'Admin User',
-        role: 'ADMIN',
+        role: INSTITUTION_ADMIN_ROLE,
       };
 
       findUser.mockImplementation(async (query) => {
@@ -1313,7 +1328,7 @@ describe('setupOpenId', () => {
       });
 
       const { user } = await validate(tokenset);
-      expect(user.role).toBe('ADMIN');
+      expect(user.role).toBe(INSTITUTION_ADMIN_ROLE);
       expect(undici.fetch).toHaveBeenCalledTimes(1);
     });
 
@@ -1608,12 +1623,11 @@ describe('setupOpenId', () => {
     expect(user.federatedTokens.id_token).toBe('test_id_token');
   });
 
-  it('should set role to "ADMIN" if OPENID_ADMIN_ROLE is set and user has that role', async () => {
+  it('should set role to INSTITUTION_ADMIN when OPENID_ADMIN_ROLE is set and user has that role', async () => {
     // Act
     const { user } = await validate(tokenset);
 
-    // Assert – verify that the user role is set to "ADMIN"
-    expect(user.role).toBe('ADMIN');
+    expect(user.role).toBe(INSTITUTION_ADMIN_ROLE);
   });
 
   it('should not set user role if OPENID_ADMIN_ROLE is set but the user does not have that role', async () => {
@@ -1667,7 +1681,7 @@ describe('setupOpenId', () => {
       expect(findRolesByNames).not.toHaveBeenCalled();
     });
 
-    it('leaves ADMIN authoritative when OPENID_ADMIN_ROLE grants admin', async () => {
+    it('maps OPENID_ADMIN_ROLE to the institution-admin role', async () => {
       jwtDecode.mockReturnValue({
         roles: ['requiredRole', 'STANDARD-USER'],
         permissions: ['admin'],
@@ -1675,7 +1689,7 @@ describe('setupOpenId', () => {
 
       const { user } = await validate(tokenset);
 
-      expect(user.role).toBe('ADMIN');
+      expect(user.role).toBe(INSTITUTION_ADMIN_ROLE);
     });
 
     it('preserves an existing ADMIN role when admin is manually assigned', async () => {
@@ -1779,7 +1793,7 @@ describe('setupOpenId', () => {
         openidId: tokenset.claims().sub,
         username: 'adminuser',
         name: 'Admin User',
-        role: 'ADMIN',
+        role: INSTITUTION_ADMIN_ROLE,
       };
 
       findUser.mockImplementation(async (query) => {
@@ -1929,7 +1943,7 @@ describe('setupOpenId', () => {
       openidId: tokenset.claims().sub,
       username: 'adminuser',
       name: 'Admin User',
-      role: 'ADMIN',
+      role: INSTITUTION_ADMIN_ROLE,
     };
 
     findUser.mockImplementation(async (query) => {
@@ -1959,7 +1973,7 @@ describe('setupOpenId', () => {
       }),
     );
     expect(logger.info).toHaveBeenCalledWith(
-      expect.stringContaining('demoted from admin - role no longer present in token'),
+      expect.stringContaining('demoted from institution admin - role no longer present in token'),
     );
   });
 
@@ -2121,7 +2135,7 @@ describe('setupOpenId', () => {
 
       const { user } = await validate(tokenset);
 
-      expect(user.role).toBe('ADMIN');
+      expect(user.role).toBe(INSTITUTION_ADMIN_ROLE);
     });
 
     it('should extract admin role from nested path in userinfo', async () => {
@@ -2154,7 +2168,7 @@ describe('setupOpenId', () => {
         claims: () => userinfoWithNestedGroups,
       });
 
-      expect(user.role).toBe('ADMIN');
+      expect(user.role).toBe(INSTITUTION_ADMIN_ROLE);
     });
 
     it('should handle boolean admin role value', async () => {
@@ -2171,7 +2185,7 @@ describe('setupOpenId', () => {
 
       const { user } = await validate(tokenset);
 
-      expect(user.role).toBe('ADMIN');
+      expect(user.role).toBe(INSTITUTION_ADMIN_ROLE);
     });
 
     it('should handle string admin role value matching exactly', async () => {
@@ -2188,7 +2202,7 @@ describe('setupOpenId', () => {
 
       const { user } = await validate(tokenset);
 
-      expect(user.role).toBe('ADMIN');
+      expect(user.role).toBe(INSTITUTION_ADMIN_ROLE);
     });
 
     it('should not set admin role when string value does not match', async () => {
@@ -2222,7 +2236,7 @@ describe('setupOpenId', () => {
 
       const { user } = await validate(tokenset);
 
-      expect(user.role).toBe('ADMIN');
+      expect(user.role).toBe(INSTITUTION_ADMIN_ROLE);
     });
 
     it('should not set admin when role is not in array', async () => {
@@ -2259,7 +2273,7 @@ describe('setupOpenId', () => {
       const { user } = await validate(tokenset);
 
       // Assert – admin role is granted after splitting the delimited string
-      expect(user.role).toBe('ADMIN');
+      expect(user.role).toBe(INSTITUTION_ADMIN_ROLE);
     });
 
     it('should not grant admin when admin role claim is a space-separated string that does not contain the admin role', async () => {

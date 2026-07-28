@@ -1,5 +1,6 @@
 import { Schema } from 'mongoose';
 import { SystemRoles } from 'librechat-data-provider';
+import { InstitutionMembershipStatuses } from '~/common';
 import { IUser } from '~/types';
 
 // Session sub-schema
@@ -162,6 +163,30 @@ const userSchema: Schema<IUser> = new Schema<IUser>(
       type: String,
       index: true,
     },
+    membershipStatus: {
+      type: String,
+      enum: Object.values(InstitutionMembershipStatuses),
+      default: InstitutionMembershipStatuses.ACTIVE,
+      index: true,
+    },
+    suspendedAt: {
+      type: Date,
+      default: null,
+    },
+    suspendedBy: {
+      type: Schema.Types.ObjectId,
+      ref: 'User',
+      default: null,
+    },
+    removedAt: {
+      type: Date,
+      default: null,
+    },
+    removedBy: {
+      type: Schema.Types.ObjectId,
+      ref: 'User',
+      default: null,
+    },
   },
   { timestamps: true },
 );
@@ -169,6 +194,7 @@ const userSchema: Schema<IUser> = new Schema<IUser>(
 userSchema.index({ email: 1, tenantId: 1 }, { unique: true });
 userSchema.index({ role: 1, tenantId: 1 });
 userSchema.index({ idOnTheSource: 1, openidIssuer: 1, tenantId: 1 });
+userSchema.index({ tenantId: 1, membershipStatus: 1, createdAt: -1 });
 
 const oAuthIdFields = [
   'googleId',

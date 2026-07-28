@@ -1,5 +1,6 @@
 import { Types } from 'mongoose';
 import { PrincipalType, SystemRoles } from 'librechat-data-provider';
+import { INSTITUTION_ADMIN_ROLE } from '@librechat/data-schemas';
 import type { IRole, IUser } from '@librechat/data-schemas';
 import type { Response } from 'express';
 import type { ServerRequest } from '~/types/http';
@@ -345,7 +346,7 @@ describe('createAdminRolesHandlers', () => {
       expect(json).toHaveBeenCalledWith({ error: 'Role "editor" already exists' });
     });
 
-    it('returns 409 when name is reserved system role', async () => {
+    it('returns 403 when name is reserved system role', async () => {
       const deps = createDeps({
         createRoleByName: jest
           .fn()
@@ -358,9 +359,9 @@ describe('createAdminRolesHandlers', () => {
 
       await handlers.createRole(req, res);
 
-      expect(status).toHaveBeenCalledWith(409);
+      expect(status).toHaveBeenCalledWith(403);
       expect(json).toHaveBeenCalledWith({
-        error: 'Cannot create role with reserved system name: ADMIN',
+        error: 'Cannot create a managed system role',
       });
     });
 
@@ -1333,11 +1334,10 @@ describe('createAdminRolesHandlers', () => {
       expect(json).toHaveBeenCalledWith({ error: 'User not found' });
     });
 
-    it('returns 400 when reassigning the last admin to another role', async () => {
+    it('returns 403 when reassigning an institution admin through tenant role management', async () => {
       const deps = createDeps({
         getRoleByName: jest.fn().mockResolvedValue(mockRole({ name: 'editor' })),
-        findUser: jest.fn().mockResolvedValue(mockUser({ role: SystemRoles.ADMIN })),
-        countUsersByRole: jest.fn().mockResolvedValue(1),
+        findUser: jest.fn().mockResolvedValue(mockUser({ role: INSTITUTION_ADMIN_ROLE })),
       });
       const handlers = createAdminRolesHandlers(deps);
       const { req, res, status, json } = createReqRes({
@@ -1347,17 +1347,17 @@ describe('createAdminRolesHandlers', () => {
 
       await handlers.addRoleMember(req, res);
 
-      expect(status).toHaveBeenCalledWith(400);
-      expect(json).toHaveBeenCalledWith({ error: 'Cannot remove the last admin user' });
+      expect(status).toHaveBeenCalledWith(403);
+      expect(json).toHaveBeenCalledWith({
+        error: 'Use institution admin management to change this user role',
+      });
       expect(deps.updateUser).not.toHaveBeenCalled();
     });
 
-    it('allows reassigning an admin when multiple admins exist', async () => {
+    it('returns 403 when reassigning a legacy ADMIN user through tenant role management', async () => {
       const deps = createDeps({
         getRoleByName: jest.fn().mockResolvedValue(mockRole({ name: 'editor' })),
         findUser: jest.fn().mockResolvedValue(mockUser({ role: SystemRoles.ADMIN })),
-        countUsersByRole: jest.fn().mockResolvedValue(3),
-        updateUser: jest.fn().mockResolvedValue(mockUser({ role: 'editor' })),
       });
       const handlers = createAdminRolesHandlers(deps);
       const { req, res, status } = createReqRes({
@@ -1367,16 +1367,15 @@ describe('createAdminRolesHandlers', () => {
 
       await handlers.addRoleMember(req, res);
 
-      expect(status).toHaveBeenCalledWith(200);
-      expect(deps.updateUser).toHaveBeenCalledWith(validUserId, { role: 'editor' });
+      expect(status).toHaveBeenCalledWith(403);
+      expect(deps.updateUser).not.toHaveBeenCalled();
     });
 
-    it('rolls back assignment when post-write admin count is zero', async () => {
+    it('allows assigning a regular user to a custom role', async () => {
       const deps = createDeps({
         getRoleByName: jest.fn().mockResolvedValue(mockRole({ name: 'editor' })),
-        findUser: jest.fn().mockResolvedValue(mockUser({ role: SystemRoles.ADMIN })),
-        countUsersByRole: jest.fn().mockResolvedValueOnce(2).mockResolvedValueOnce(0),
-        updateUser: jest.fn().mockResolvedValue(mockUser()),
+        findUser: jest.fn().mockResolvedValue(mockUser({ role: SystemRoles.USER })),
+        updateUser: jest.fn().mockResolvedValue(mockUser({ role: 'editor' })),
       });
       const handlers = createAdminRolesHandlers(deps);
       const { req, res, status, json } = createReqRes({
@@ -1386,10 +1385,9 @@ describe('createAdminRolesHandlers', () => {
 
       await handlers.addRoleMember(req, res);
 
-      expect(deps.updateUser).toHaveBeenCalledTimes(2);
-      expect(deps.updateUser).toHaveBeenLastCalledWith(validUserId, { role: SystemRoles.ADMIN });
-      expect(status).toHaveBeenCalledWith(400);
-      expect(json).toHaveBeenCalledWith({ error: 'Cannot remove the last admin user' });
+      expect(deps.updateUser).toHaveBeenCalledWith(validUserId, { role: 'editor' });
+      expect(status).toHaveBeenCalledWith(200);
+      expect(json).toHaveBeenCalledWith({ success: true });
     });
 
     it('returns 403 when adding to a non-ADMIN system role', async () => {
@@ -1409,23 +1407,21 @@ describe('createAdminRolesHandlers', () => {
       expect(deps.updateUser).not.toHaveBeenCalled();
     });
 
-    it('allows promoting a non-admin user to the ADMIN role', async () => {
+    it('returns 403 when adding a member to INSTITUTION_ADMIN through tenant role management', async () => {
       const deps = createDeps({
-        getRoleByName: jest.fn().mockResolvedValue(mockRole({ name: SystemRoles.ADMIN })),
-        findUser: jest.fn().mockResolvedValue(mockUser({ role: 'editor' })),
-        updateUser: jest.fn().mockResolvedValue(mockUser({ role: SystemRoles.ADMIN })),
       });
       const handlers = createAdminRolesHandlers(deps);
       const { req, res, status, json } = createReqRes({
-        params: { name: SystemRoles.ADMIN },
+        params: { name: INSTITUTION_ADMIN_ROLE },
         body: { userId: validUserId },
       });
 
       await handlers.addRoleMember(req, res);
 
-      expect(deps.updateUser).toHaveBeenCalledWith(validUserId, { role: SystemRoles.ADMIN });
-      expect(status).toHaveBeenCalledWith(200);
-      expect(json).toHaveBeenCalledWith({ success: true });
+      expect(status).toHaveBeenCalledWith(403);
+      expect(json).toHaveBeenCalledWith({
+        error: 'Cannot directly assign members to a system role',
+      });
     });
 
     it('returns 500 on unexpected error', async () => {
@@ -1540,86 +1536,19 @@ describe('createAdminRolesHandlers', () => {
       expect(deps.updateUser).not.toHaveBeenCalled();
     });
 
-    it('returns 400 when removing the last admin user', async () => {
+    it('returns 403 when removing an institution admin through tenant role management', async () => {
       const deps = createDeps({
-        getRoleByName: jest.fn().mockResolvedValue(mockRole({ name: SystemRoles.ADMIN })),
-        findUser: jest.fn().mockResolvedValue(mockUser({ role: SystemRoles.ADMIN })),
-        countUsersByRole: jest.fn().mockResolvedValue(1),
       });
       const handlers = createAdminRolesHandlers(deps);
       const { req, res, status, json } = createReqRes({
-        params: { name: SystemRoles.ADMIN, userId: validUserId },
+        params: { name: INSTITUTION_ADMIN_ROLE, userId: validUserId },
       });
 
       await handlers.removeRoleMember(req, res);
 
-      expect(status).toHaveBeenCalledWith(400);
-      expect(json).toHaveBeenCalledWith({ error: 'Cannot remove the last admin user' });
+      expect(status).toHaveBeenCalledWith(403);
+      expect(json).toHaveBeenCalledWith({ error: 'Cannot remove members from a system role' });
       expect(deps.updateUser).not.toHaveBeenCalled();
-    });
-
-    it('allows removing an admin when multiple admins exist', async () => {
-      const deps = createDeps({
-        getRoleByName: jest.fn().mockResolvedValue(mockRole({ name: SystemRoles.ADMIN })),
-        findUser: jest.fn().mockResolvedValue(mockUser({ role: SystemRoles.ADMIN })),
-        countUsersByRole: jest.fn().mockResolvedValue(3),
-      });
-      const handlers = createAdminRolesHandlers(deps);
-      const { req, res, status, json } = createReqRes({
-        params: { name: SystemRoles.ADMIN, userId: validUserId },
-      });
-
-      await handlers.removeRoleMember(req, res);
-
-      expect(status).toHaveBeenCalledWith(200);
-      expect(json).toHaveBeenCalledWith({ success: true });
-      expect(deps.updateUser).toHaveBeenCalledWith(validUserId, { role: SystemRoles.USER });
-    });
-
-    it('rolls back removal when post-write check finds zero admins', async () => {
-      const deps = createDeps({
-        getRoleByName: jest.fn().mockResolvedValue(mockRole({ name: SystemRoles.ADMIN })),
-        findUser: jest.fn().mockResolvedValue(mockUser({ role: SystemRoles.ADMIN })),
-        countUsersByRole: jest.fn().mockResolvedValueOnce(2).mockResolvedValueOnce(0),
-      });
-      const handlers = createAdminRolesHandlers(deps);
-      const { req, res, status, json } = createReqRes({
-        params: { name: SystemRoles.ADMIN, userId: validUserId },
-      });
-
-      await handlers.removeRoleMember(req, res);
-
-      expect(status).toHaveBeenCalledWith(400);
-      expect(json).toHaveBeenCalledWith({ error: 'Cannot remove the last admin user' });
-      expect(deps.updateUser).toHaveBeenCalledTimes(2);
-      expect(deps.updateUser).toHaveBeenNthCalledWith(1, validUserId, {
-        role: SystemRoles.USER,
-      });
-      expect(deps.updateUser).toHaveBeenNthCalledWith(2, validUserId, {
-        role: SystemRoles.ADMIN,
-      });
-    });
-
-    it('returns 400 even when rollback updateUser throws', async () => {
-      const deps = createDeps({
-        getRoleByName: jest.fn().mockResolvedValue(mockRole({ name: SystemRoles.ADMIN })),
-        findUser: jest.fn().mockResolvedValue(mockUser({ role: SystemRoles.ADMIN })),
-        countUsersByRole: jest.fn().mockResolvedValueOnce(2).mockResolvedValueOnce(0),
-        updateUser: jest
-          .fn()
-          .mockResolvedValueOnce(mockUser({ role: SystemRoles.USER }))
-          .mockRejectedValueOnce(new Error('rollback failed')),
-      });
-      const handlers = createAdminRolesHandlers(deps);
-      const { req, res, status, json } = createReqRes({
-        params: { name: SystemRoles.ADMIN, userId: validUserId },
-      });
-
-      await handlers.removeRoleMember(req, res);
-
-      expect(status).toHaveBeenCalledWith(400);
-      expect(json).toHaveBeenCalledWith({ error: 'Cannot remove the last admin user' });
-      expect(deps.updateUser).toHaveBeenCalledTimes(2);
     });
 
     it('returns 500 on unexpected error', async () => {

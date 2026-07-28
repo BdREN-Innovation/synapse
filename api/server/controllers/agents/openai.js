@@ -782,7 +782,7 @@ const OpenAIChatCompletionController = async (req, res) => {
     // Record token usage against balance
     const balanceConfig = getBalanceConfig(appConfig);
     const transactionsConfig = getTransactionsConfig(appConfig);
-    recordCollectedUsage(
+    await recordCollectedUsage(
       {
         spendTokens: db.spendTokens,
         spendStructuredTokens: db.spendStructuredTokens,
@@ -791,6 +791,7 @@ const OpenAIChatCompletionController = async (req, res) => {
       },
       {
         user: userId,
+        tenantId: req.user?.tenantId,
         conversationId,
         collectedUsage,
         context: 'message',
@@ -799,9 +800,7 @@ const OpenAIChatCompletionController = async (req, res) => {
         transactions: transactionsConfig,
         model: primaryConfig.model || agent.model_parameters?.model,
       },
-    ).catch((err) => {
-      logger.error('[OpenAI API] Error recording usage:', err);
-    });
+    );
 
     // Finalize response
     const duration = Date.now() - requestStartTime;

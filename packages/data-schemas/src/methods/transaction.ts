@@ -1,9 +1,28 @@
 import type { FilterQuery, Model, Types } from 'mongoose';
 import type { IBalance, IBalanceUpdate, TransactionData } from '~/types';
 import type { ITransaction } from '~/schema/transaction';
+import { inferProviderKey } from '~/utils/transactions';
+import { getTenantId } from '~/config/tenantContext';
 import logger from '~/config/winston';
 
 const cancelRate = 1.15;
+
+/** MongoDB duplicate-key error code, raised when the ledger idempotency index
+ * rejects a replayed usage write. */
+const DUPLICATE_KEY_ERROR_CODE = 11000;
+
+interface WriteErrorLike {
+  index?: number;
+  code?: number;
+}
+
+function isDuplicateKeyError(error: unknown): boolean {
+  return (
+    typeof error === 'object' &&
+    error !== null &&
+    (error as { code?: number }).code === DUPLICATE_KEY_ERROR_CODE
+  );
+}
 
 type MultiplierParams = {
   model?: string;
@@ -12,6 +31,8 @@ type MultiplierParams = {
   inputTokenCount?: number;
   endpointTokenConfig?: Record<string, Record<string, number>>;
 };
+
+type NormalizeModelFn = (model: string, endpoint?: string) => string | undefined;
 
 type CacheMultiplierParams = {
   cacheType?: 'write' | 'read';
@@ -40,8 +61,15 @@ interface InternalTxDoc {
 export interface TxData {
   user: string | Types.ObjectId;
   conversationId?: string;
+  messageId?: string;
   model?: string;
+  modelKey?: string;
+  providerKey?: string;
+  providerModelId?: string;
   context?: string;
+  usageKind?: string;
+  usageUnit?: 'tokens' | 'images' | 'seconds' | 'operations';
+  requestKey?: string;
   tokenType?: 'prompt' | 'completion' | 'credits';
   rawAmount?: number;
   valueKey?: string;
@@ -50,8 +78,29 @@ export interface TxData {
   inputTokens?: number;
   writeTokens?: number;
   readTokens?: number;
+  /**
+   * Institution tenant this usage belongs to. When provided, it is written
+   * explicitly onto the ledger row instead of relying on ambient
+   * AsyncLocalStorage context, so usage recorded outside the request scope
+   * (workers, event handlers, deferred writes) still attributes correctly
+   * (P1-3).
+   */
+  tenantId?: string;
+  requireTenant?: boolean;
   balance?: { enabled?: boolean };
   transactions?: { enabled?: boolean };
+}
+
+/** One group of transactions sharing an idempotency natural key more than
+ * once — used to audit for historical duplicates before enabling the unique
+ * ledger index (P1-3). */
+export interface DuplicateRequestKeyGroup {
+  tenantId: string | null;
+  requestKey: string;
+  tokenType: string;
+  valueKey: string | null;
+  count: number;
+  ids: string[];
 }
 
 /** Return value from a successful transaction that also updates the balance */
@@ -69,6 +118,7 @@ export function createTransactionMethods(
   txMethods: {
     getMultiplier: (params: MultiplierParams) => number;
     getCacheMultiplier: (params: CacheMultiplierParams) => number | null;
+    matchModelName?: NormalizeModelFn;
   },
 ): {
   updateBalance: ({
@@ -80,7 +130,7 @@ export function createTransactionMethods(
     incrementValue: number;
     setValues?: IBalanceUpdate;
   }) => Promise<IBalance>;
-  bulkInsertTransactions: (docs: TransactionData[]) => Promise<void>;
+  bulkInsertTransactions: (docs: TransactionData[]) => Promise<{ insertedIndexes: number[] }>;
   findBalanceByUser: (user: string) => Promise<IBalance | null>;
   upsertBalanceFields: (user: string, fields: IBalanceUpdate) => Promise<IBalance | null>;
   getTransactions: (filter: FilterQuery<ITransaction>) => Promise<ITransaction[]>;
@@ -99,8 +149,64 @@ export function createTransactionMethods(
     | undefined
   >;
   createStructuredTransaction: (_txData: TxData) => Promise<TransactionResult | undefined>;
+  reportDuplicateRequestKeys: (
+    filter?: FilterQuery<ITransaction>,
+  ) => Promise<DuplicateRequestKeyGroup[]>;
 } {
-  /** Calculate and set the tokenValue for a transaction */
+  function normalizeUsageMetadata(txData: TxData): Partial<TxData> {
+    const rawModel =
+      typeof txData.model === 'string' && txData.model.trim() ? txData.model.trim() : undefined;
+    const providerKey = inferProviderKey(rawModel, txData.providerKey);
+    const providerModelId =
+      typeof txData.providerModelId === 'string' && txData.providerModelId.trim()
+        ? txData.providerModelId.trim()
+        : rawModel;
+    const modelCandidate =
+      providerKey && rawModel?.startsWith(`${providerKey}/`)
+        ? rawModel.slice(providerKey.length + 1)
+        : rawModel;
+    const modelKey =
+      (modelCandidate && txMethods.matchModelName?.(modelCandidate)) ||
+      (rawModel && txMethods.matchModelName?.(rawModel)) ||
+      modelCandidate ||
+      rawModel;
+    const usageKind =
+      typeof txData.usageKind === 'string' && txData.usageKind.trim()
+        ? txData.usageKind.trim()
+        : txData.context;
+    const usageUnit = txData.usageUnit ?? 'tokens';
+    /**
+     * The requestKey is the idempotency key for the ledger (P1-3). An explicit
+     * key supplied by the caller (e.g. the agents path, which includes a
+     * per-call sequence) is trusted as unique-per-event. Otherwise a key is
+     * derived ONLY when both conversationId and messageId are present, so it is
+     * stable across retries of the same message yet still distinct per message.
+     * When messageId is absent the key is intentionally left undefined: a
+     * coarser conversation-level key would collapse genuinely distinct usage
+     * events and must never gate the unique index.
+     */
+    const explicitRequestKey =
+      typeof txData.requestKey === 'string' && txData.requestKey.trim()
+        ? txData.requestKey.trim()
+        : undefined;
+    const derivedRequestKey =
+      txData.conversationId && txData.messageId
+        ? [txData.conversationId, txData.messageId, usageKind, providerKey, modelKey]
+            .filter(Boolean)
+            .join(':')
+        : undefined;
+    const requestKey = explicitRequestKey ?? derivedRequestKey;
+
+    return {
+      providerKey,
+      providerModelId,
+      modelKey,
+      usageKind,
+      usageUnit,
+      requestKey,
+    };
+  }
+
   function calculateTokenValue(txn: InternalTxDoc) {
     const { valueKey, tokenType, model, endpointTokenConfig, inputTokenCount } = txn;
     const multiplier = Math.abs(
@@ -307,7 +413,7 @@ export function createTransactionMethods(
       return;
     }
     const Transaction = mongoose.models.Transaction;
-    const transaction = new Transaction(txData);
+    const transaction = new Transaction({ ...txData, ...normalizeUsageMetadata(txData) });
     transaction.endpointTokenConfig = txData.endpointTokenConfig;
     transaction.inputTokenCount = txData.inputTokenCount;
     calculateTokenValue(transaction);
@@ -329,27 +435,94 @@ export function createTransactionMethods(
   }
 
   /**
+   * Persists a freshly-computed transaction exactly once (P1-3). A replayed
+   * usage write carries the same `requestKey` natural key and is rejected by
+   * the idempotency index; that replay is treated as a no-op so the balance is
+   * never charged twice. `tenantId` rides along on the document (explicit from
+   * `TxData` or injected from async context by the isolation plugin's
+   * pre-save hook); a keyed usage write with no resolvable tenant is surfaced
+   * as a warning rather than silently attributed to the null tenant.
+   */
+  async function persistTransactionOnce(
+    transaction: ITransaction,
+    requireTenant = false,
+  ): Promise<{ inserted: boolean }> {
+    const tenantId = transaction.tenantId ?? getTenantId();
+    if (!tenantId && requireTenant) {
+      throw new Error(
+        '[Transaction] Billable usage requires an explicit or request-scoped tenantId',
+      );
+    }
+    if (tenantId) {
+      transaction.tenantId = tenantId;
+    }
+
+    const missingFields = tenantId
+      ? [
+          !transaction.user && 'user',
+          !transaction.providerKey && 'providerKey',
+          !transaction.modelKey && 'modelKey',
+          !transaction.requestKey && 'requestKey',
+        ].filter(Boolean)
+      : [];
+    if (missingFields.length > 0) {
+      throw new Error(
+        `[Transaction] Billable tenant usage is missing required metadata: ${missingFields.join(', ')}`,
+      );
+    }
+
+    try {
+      await transaction.save();
+      return { inserted: true };
+    } catch (error) {
+      if (isDuplicateKeyError(error)) {
+        logger.debug('[Transaction] duplicate usage write ignored (idempotent replay)', {
+          requestKey: transaction.requestKey,
+        });
+        return { inserted: false };
+      }
+      throw error;
+    }
+  }
+
+  /** Balance snapshot returned for an idempotent replay, where no charge is
+   * applied because the original write already settled it. */
+  async function unchargedResult(transaction: ITransaction): Promise<TransactionResult> {
+    const userId = transaction.user.toString();
+    const current = await findBalanceByUser(userId);
+    return {
+      rate: transaction.rate as number,
+      user: userId,
+      balance: current?.tokenCredits ?? 0,
+      [transaction.tokenType as string]: 0,
+    } as TransactionResult;
+  }
+
+  /**
    * Creates a transaction and updates the balance.
    */
   async function createTransaction(_txData: TxData): Promise<TransactionResult | undefined> {
-    const { balance, transactions, ...txData } = _txData;
+    const { balance, transactions, requireTenant, ...txData } = _txData;
     if (txData.rawAmount != null && isNaN(txData.rawAmount)) {
       return;
     }
 
-    if (transactions?.enabled === false) {
+    if (transactions?.enabled === false && !(txData.tenantId ?? getTenantId())) {
       return;
     }
 
     const Transaction = mongoose.models.Transaction;
-    const transaction = new Transaction(txData);
+    const transaction = new Transaction({ ...txData, ...normalizeUsageMetadata(txData) });
     transaction.endpointTokenConfig = txData.endpointTokenConfig;
     transaction.inputTokenCount = txData.inputTokenCount;
     calculateTokenValue(transaction);
 
-    await transaction.save();
+    const { inserted } = await persistTransactionOnce(transaction, requireTenant);
     if (!balance?.enabled) {
       return;
+    }
+    if (!inserted) {
+      return await unchargedResult(transaction);
     }
 
     const incrementValue = transaction.tokenValue as number;
@@ -372,22 +545,25 @@ export function createTransactionMethods(
   async function createStructuredTransaction(
     _txData: TxData,
   ): Promise<TransactionResult | undefined> {
-    const { balance, transactions, ...txData } = _txData;
-    if (transactions?.enabled === false) {
+    const { balance, transactions, requireTenant, ...txData } = _txData;
+    if (transactions?.enabled === false && !(txData.tenantId ?? getTenantId())) {
       return;
     }
 
     const Transaction = mongoose.models.Transaction;
-    const transaction = new Transaction(txData);
+    const transaction = new Transaction({ ...txData, ...normalizeUsageMetadata(txData) });
     transaction.endpointTokenConfig = txData.endpointTokenConfig;
     transaction.inputTokenCount = txData.inputTokenCount;
 
     calculateStructuredTokenValue(transaction);
 
-    await transaction.save();
+    const { inserted } = await persistTransactionOnce(transaction, requireTenant);
 
     if (!balance?.enabled) {
       return;
+    }
+    if (!inserted) {
+      return await unchargedResult(transaction);
     }
 
     const incrementValue = transaction.tokenValue as number;
@@ -416,6 +592,44 @@ export function createTransactionMethods(
       logger.error('Error querying transactions:', error);
       throw error;
     }
+  }
+
+  /**
+   * Reports keyed transactions that already share an idempotency natural key
+   * more than once (P1-3). Run this before building the unique ledger index on
+   * an existing deployment: a non-empty result means historical duplicates
+   * must be reconciled first, or the unique index build will fail.
+   */
+  async function reportDuplicateRequestKeys(
+    filter: FilterQuery<ITransaction> = {},
+  ): Promise<DuplicateRequestKeyGroup[]> {
+    const Transaction = mongoose.models.Transaction;
+    const groups = await Transaction.aggregate([
+      { $match: { ...filter, requestKey: { $type: 'string' } } },
+      {
+        $group: {
+          _id: {
+            tenantId: '$tenantId',
+            requestKey: '$requestKey',
+            tokenType: '$tokenType',
+            valueKey: '$valueKey',
+          },
+          count: { $sum: 1 },
+          ids: { $push: '$_id' },
+        },
+      },
+      { $match: { count: { $gt: 1 } } },
+      { $sort: { count: -1 } },
+    ]);
+
+    return groups.map((group) => ({
+      tenantId: group._id.tenantId ?? null,
+      requestKey: group._id.requestKey,
+      tokenType: group._id.tokenType,
+      valueKey: group._id.valueKey ?? null,
+      count: group.count,
+      ids: group.ids.map((id: Types.ObjectId) => id.toString()),
+    }));
   }
 
   /** Retrieves a user's balance record. */
@@ -453,16 +667,56 @@ export function createTransactionMethods(
     return Balance.deleteMany(filter);
   }
 
-  async function bulkInsertTransactions(docs: TransactionData[]): Promise<void> {
+  /**
+   * Inserts usage documents idempotently. Duplicate `requestKey` writes are
+   * replays of usage already recorded, so they are dropped while every other
+   * document in the batch still lands. The returned indexes tell the caller
+   * which documents were genuinely recorded, so a balance is only ever charged
+   * for those.
+   */
+  async function bulkInsertTransactions(
+    docs: TransactionData[],
+  ): Promise<{ insertedIndexes: number[] }> {
     if (!docs.length) {
-      return;
+      return { insertedIndexes: [] };
     }
+    const allIndexes = docs.map((_, index) => index);
     try {
       const Transaction = mongoose.models.Transaction;
-      await Transaction.insertMany(docs);
+      await Transaction.insertMany(docs, { ordered: false });
+      return { insertedIndexes: allIndexes };
     } catch (error) {
-      logger.error('[bulkInsertTransactions] Error inserting transaction docs:', error);
-      throw error;
+      const writeErrors = (
+        error as { writeErrors?: Array<{ index?: number; code?: number; err?: WriteErrorLike }> }
+      )?.writeErrors;
+      if (!Array.isArray(writeErrors) || writeErrors.length === 0) {
+        logger.error('[bulkInsertTransactions] Error inserting transaction docs:', error);
+        throw error;
+      }
+
+      const failedIndexes = new Set<number>();
+      let hasNonDuplicateFailure = false;
+      for (const writeError of writeErrors) {
+        const index = writeError?.index ?? writeError?.err?.index;
+        if (typeof index === 'number') {
+          failedIndexes.add(index);
+        }
+        const code = writeError?.code ?? writeError?.err?.code;
+        if (code !== DUPLICATE_KEY_ERROR_CODE) {
+          hasNonDuplicateFailure = true;
+        }
+      }
+
+      if (hasNonDuplicateFailure) {
+        logger.error('[bulkInsertTransactions] Error inserting transaction docs:', error);
+        throw error;
+      }
+
+      logger.debug('[bulkInsertTransactions] duplicate usage writes ignored (idempotent replay)', {
+        duplicates: failedIndexes.size,
+        total: docs.length,
+      });
+      return { insertedIndexes: allIndexes.filter((index) => !failedIndexes.has(index)) };
     }
   }
 
@@ -477,6 +731,7 @@ export function createTransactionMethods(
     createTransaction,
     createAutoRefillTransaction,
     createStructuredTransaction,
+    reportDuplicateRequestKeys,
   };
 }
 

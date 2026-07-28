@@ -35,6 +35,7 @@ const { getAppConfig } = require('~/server/services/Config');
 const getLogStores = require('~/cache/getLogStores');
 const { getOpenIdConfig } = require('~/strategies');
 const middleware = require('~/server/middleware');
+const { ensurePlatformSuperadminForUser } = require('~/server/services/platformAdmin');
 
 const requireAdminAccess = requireCapability(SystemCapabilities.ACCESS_ADMIN);
 
@@ -80,10 +81,16 @@ router.post(
   loginController,
 );
 
-router.get('/verify', middleware.requireJwtAuth, requireAdminAccess, (req, res) => {
+router.get('/verify', middleware.requireJwtAuth, requireAdminAccess, async (req, res) => {
   const { password: _p, totpSecret: _t, __v, ...user } = req.user;
   user.id = user._id.toString();
-  res.status(200).json({ user });
+  const platformState = await ensurePlatformSuperadminForUser(req.user);
+  res.status(200).json({
+    user: {
+      ...user,
+      isPlatformSuperadmin: platformState.isPlatformSuperadmin,
+    },
+  });
 });
 
 router.get('/oauth/openid/check', (req, res) => {

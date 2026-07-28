@@ -4,10 +4,14 @@ const { SystemCapabilities } = require('@librechat/data-schemas');
 const { requireCapability } = require('~/server/middleware/roles/capabilities');
 const { requireJwtAuth } = require('~/server/middleware');
 const db = require('~/models');
+const { ensurePlatformSuperadminForUser } = require('~/server/services/platformAdmin');
 
 const router = express.Router();
 
 const requireAdminAccess = requireCapability(SystemCapabilities.ACCESS_ADMIN);
+const requireAuditLogRead = requireCapability(SystemCapabilities.READ_AUDIT_LOG);
+const requireManageRoles = requireCapability(SystemCapabilities.MANAGE_ROLES);
+const requirePlatformSuperadmin = require('~/server/middleware/platformAdmin');
 
 const handlers = createAdminGrantsHandlers({
   listGrants: db.listGrants,
@@ -28,11 +32,32 @@ const handlers = createAdminGrantsHandlers({
 
 router.use(requireJwtAuth, requireAdminAccess);
 
-router.get('/', handlers.listGrants);
-router.get('/effective', handlers.getEffectiveCapabilities);
-router.get('/:principalType/:principalId', handlers.getPrincipalGrants);
-router.post('/', handlers.assignGrant);
+router.get('/effective', async (req, res) => {
+  try {
+    const platformState = await ensurePlatformSuperadminForUser(req.user);
+    if (platformState.isPlatformSuperadmin) {
+      return res.status(200).json({ capabilities: Object.values(SystemCapabilities) });
+    }
+  } catch (error) {
+    return res.status(500).json({ error: 'Failed to get effective capabilities' });
+  }
+
+  return handlers.getEffectiveCapabilities(req, res);
+});
+router.get('/', requireAuditLogRead, requirePlatformSuperadmin, handlers.listGrants);
+router.get(
+  '/:principalType/:principalId',
+  requireAuditLogRead,
+  requirePlatformSuperadmin,
+  handlers.getPrincipalGrants,
+);
+router.post('/', requireManageRoles, requirePlatformSuperadmin, handlers.assignGrant);
 /** Callers should encodeURIComponent the capability for client compatibility (e.g. manage%3Aconfigs%3Aendpoints). */
-router.delete('/:principalType/:principalId/:capability', handlers.revokeGrant);
+router.delete(
+  '/:principalType/:principalId/:capability',
+  requireManageRoles,
+  requirePlatformSuperadmin,
+  handlers.revokeGrant,
+);
 
 module.exports = router;

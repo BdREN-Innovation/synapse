@@ -1,6 +1,7 @@
 import { logger, SYSTEM_TENANT_ID } from '@librechat/data-schemas';
 import type { Request, Response, NextFunction } from 'express';
 import { buildTenantContext, runWithTenantContext } from './tenant';
+import { validateActiveInstitution } from './institution';
 
 /**
  * Pre-authentication tenant context middleware for unauthenticated routes.
@@ -72,5 +73,25 @@ export function preAuthTenantMiddleware(req: Request, res: Response, next: NextF
     return;
   }
 
-  runWithTenantContext(buildTenantContext({ headers: req.headers }, tenantId), next);
+  void validateActiveInstitution(tenantId)
+    .then((result) => {
+      if (!result.ok) {
+        runWithTenantContext(requestContext, () => {
+          logger.warn('[preAuthTenant] Rejected unresolved or inactive tenant header', {
+            ip: req.ip,
+            path: req.path,
+            tenantId,
+            reason: result.reason,
+          });
+          res.status(result.statusCode).json({ error: result.message });
+        });
+        return;
+      }
+
+      runWithTenantContext(buildTenantContext({ headers: req.headers }, tenantId), next);
+    })
+    .catch((error) => {
+      logger.error('[preAuthTenant] Institution validation failed', error);
+      res.status(503).json({ error: 'Institution validation failed' });
+    });
 }

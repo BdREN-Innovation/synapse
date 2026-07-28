@@ -5,6 +5,7 @@ import type { BulkWriteDeps, PricingFns } from './transactions';
 import {
   computeUsageCostUSD,
   aggregateEmittedUsage,
+  aggregateBillableUsage,
   createSubagentUsageSink,
   recordCollectedUsage,
   resolveAgentTokenConfig,
@@ -13,6 +14,33 @@ import {
   computeSummaryUsedTokens,
   priorRunOutputTokens,
 } from './usage';
+
+describe('aggregateBillableUsage', () => {
+  it('settles every model call and separates cached tokens', () => {
+    expect(
+      aggregateBillableUsage([
+        {
+          provider: 'openAI',
+          input_tokens: 100,
+          output_tokens: 20,
+          input_token_details: { cache_creation: 10, cache_read: 5 },
+        },
+        {
+          provider: 'anthropic',
+          input_tokens: 40,
+          output_tokens: 8,
+          cache_creation_input_tokens: 6,
+          cache_read_input_tokens: 4,
+        },
+      ]),
+    ).toEqual({
+      inputTokens: 115,
+      cacheWriteTokens: 16,
+      cacheReadTokens: 9,
+      outputTokens: 28,
+    });
+  });
+});
 
 describe('recordCollectedUsage', () => {
   let mockSpendTokens: jest.Mock;
@@ -752,22 +780,22 @@ describe('recordCollectedUsage', () => {
   });
 
   describe('error handling', () => {
-    it('should catch and log errors from spendTokens without throwing', async () => {
+    it('propagates spendTokens failures so billable responses cannot finalize unrecorded', async () => {
       mockSpendTokens.mockRejectedValue(new Error('DB error'));
 
       const collectedUsage: UsageMetadata[] = [
         { input_tokens: 100, output_tokens: 50, model: 'gpt-4' },
       ];
 
-      const result = await recordCollectedUsage(deps, {
-        ...baseParams,
-        collectedUsage,
-      });
-
-      expect(result).toEqual({ input_tokens: 100, output_tokens: 50 });
+      await expect(
+        recordCollectedUsage(deps, {
+          ...baseParams,
+          collectedUsage,
+        }),
+      ).rejects.toThrow('DB error');
     });
 
-    it('should catch and log errors from spendStructuredTokens without throwing', async () => {
+    it('propagates structured-ledger failures', async () => {
       mockSpendStructuredTokens.mockRejectedValue(new Error('DB error'));
 
       const collectedUsage: UsageMetadata[] = [
@@ -780,13 +808,12 @@ describe('recordCollectedUsage', () => {
         },
       ];
 
-      const result = await recordCollectedUsage(deps, {
-        ...baseParams,
-        collectedUsage,
-      });
-
-      // openAI is a subset provider → input_tokens already includes cache
-      expect(result).toEqual({ input_tokens: 100, output_tokens: 50 });
+      await expect(
+        recordCollectedUsage(deps, {
+          ...baseParams,
+          collectedUsage,
+        }),
+      ).rejects.toThrow('DB error');
     });
   });
 
@@ -806,7 +833,7 @@ describe('recordCollectedUsage', () => {
       });
 
       expect(mockSpendTokens).toHaveBeenCalledWith(
-        {
+        expect.objectContaining({
           user: 'user-123',
           conversationId: 'convo-123',
           model: 'gpt-4',
@@ -815,7 +842,7 @@ describe('recordCollectedUsage', () => {
           balance: { enabled: true },
           transactions: { enabled: true },
           endpointTokenConfig,
-        },
+        }),
         { promptTokens: 100, completionTokens: 50 },
       );
     });
@@ -1194,19 +1221,19 @@ describe('recordCollectedUsage', () => {
       expect(mockInsertMany).not.toHaveBeenCalled();
     });
 
-    it('should handle errors in bulk write gracefully', async () => {
+    it('propagates bulk-ledger failures', async () => {
       mockInsertMany.mockRejectedValue(new Error('DB error'));
 
       const collectedUsage: UsageMetadata[] = [
         { input_tokens: 100, output_tokens: 50, model: 'gpt-4' },
       ];
 
-      const result = await recordCollectedUsage(bulkDeps, {
-        ...baseParams,
-        collectedUsage,
-      });
-
-      expect(result).toEqual({ input_tokens: 100, output_tokens: 50 });
+      await expect(
+        recordCollectedUsage(bulkDeps, {
+          ...baseParams,
+          collectedUsage,
+        }),
+      ).rejects.toThrow('DB error');
     });
   });
 

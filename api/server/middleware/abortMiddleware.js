@@ -59,6 +59,7 @@ const isAbortError = (error) => {
  * @param {Array<Object>} params.collectedUsage - Usage metadata from all models
  * @param {string} [params.fallbackModel] - Fallback model name if not in usage
  * @param {string} [params.messageId] - The response message ID for transaction correlation
+ * @param {string} [params.tenantId] - Institution tenant ID
  */
 async function spendCollectedUsage({
   userId,
@@ -66,6 +67,7 @@ async function spendCollectedUsage({
   collectedUsage,
   fallbackModel,
   messageId,
+  tenantId,
 }) {
   if (!collectedUsage || collectedUsage.length === 0) {
     return;
@@ -80,6 +82,7 @@ async function spendCollectedUsage({
     },
     {
       user: userId,
+      tenantId,
       conversationId,
       collectedUsage,
       context: 'abort',
@@ -153,6 +156,7 @@ async function abortMessage(req, res) {
   if (collectedUsage && collectedUsage.length > 0) {
     await spendCollectedUsage({
       userId,
+      tenantId: req.user?.tenantId,
       conversationId: jobData?.conversationId,
       collectedUsage,
       fallbackModel: jobData?.model,
@@ -161,7 +165,15 @@ async function abortMessage(req, res) {
   } else {
     // Fallback: no collected usage, use text-based token counting for primary model only
     await db.spendTokens(
-      { ...responseMessage, context: 'incomplete', user: userId },
+      {
+        ...responseMessage,
+        context: 'incomplete',
+        user: userId,
+        tenantId: req.user?.tenantId,
+        requireTenant: Boolean(req.user?.tenantId),
+        providerKey: responseMessage.endpoint,
+        requestKey: `${conversationId}:${jobData?.responseMessageId}:incomplete`,
+      },
       { promptTokens, completionTokens },
     );
   }

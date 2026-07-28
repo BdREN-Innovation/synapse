@@ -16,11 +16,37 @@ const {
 } = require('~/server/middleware');
 
 const settings = require('./settings');
+const {
+  HttpError: UsageHttpError,
+  getMemberUsageSummary,
+} = require('~/server/services/institutionUsage');
 
 const router = express.Router();
 
 router.use('/settings', settings);
 router.get('/', requireJwtAuth, getUserController);
+router.get('/usage', requireJwtAuth, async (req, res) => {
+  const tenantId = req.user?.tenantId;
+  const userId = req.user?.id ?? req.user?._id?.toString();
+  if (!tenantId || !userId) {
+    return res.status(403).json({ error: 'Institution membership is required' });
+  }
+
+  try {
+    const result = await getMemberUsageSummary({
+      tenantId,
+      userId,
+      start: req.query.start,
+      end: req.query.end,
+    });
+    return res.status(200).json(result);
+  } catch (error) {
+    if (error instanceof UsageHttpError) {
+      return res.status(error.statusCode).json({ error: error.message });
+    }
+    return res.status(500).json({ error: 'Failed to load your usage' });
+  }
+});
 router.get('/terms', requireJwtAuth, getTermsStatusController);
 router.post('/terms/accept', requireJwtAuth, acceptTermsController);
 router.post('/plugins', requireJwtAuth, updateUserPluginsController);

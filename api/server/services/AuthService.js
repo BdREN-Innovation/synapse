@@ -6,6 +6,7 @@ const {
   getTenantId,
   DEFAULT_SESSION_EXPIRY,
   DEFAULT_REFRESH_TOKEN_EXPIRY,
+  InstitutionMembershipStatuses,
 } = require('@librechat/data-schemas');
 const { ErrorTypes, SystemRoles, errorsToString } = require('librechat-data-provider');
 const {
@@ -25,7 +26,6 @@ const {
   findToken,
   createUser,
   updateUser,
-  countUsers,
   getUserById,
   findSession,
   createToken,
@@ -38,6 +38,12 @@ const {
 } = require('~/models');
 const { registerSchema } = require('~/strategies/validators');
 const { getAppConfig } = require('~/server/services/Config');
+const {
+  activateProvisionedMember,
+  completeInviteAcceptance,
+  HttpError,
+} = require('~/server/services/institutionMembers');
+const { isPlatformAdminEmail } = require('~/server/services/platformAdmin');
 const { sendEmail } = require('~/server/utils');
 
 const domains = {
@@ -246,6 +252,11 @@ const sendVerificationEmail = async (user) => {
   logger.info(`[sendVerificationEmail] Verification link issued. [Email: ${user.email}]`);
 };
 
+const resendUserVerificationEmail = async (user) => {
+  await deleteEmailVerificationTokens(user);
+  await sendVerificationEmail(user);
+};
+
 /**
  * Verify Email
  * @param {ServerRequest} req
@@ -341,11 +352,11 @@ const registerUser = async (user, additionalData = {}) => {
   }
 
   const { email, password, name, username } = result.data;
-  const { provider, ...trustedAdditionalData } = additionalData ?? {};
+  const { provider, invite, ...trustedAdditionalData } = additionalData ?? {};
 
   let newUserId;
   try {
-    const tenantId = getTenantId();
+    const tenantId = invite?.tenantId || trustedAdditionalData?.tenantId || getTenantId();
     const appConfig = await getAppConfig(tenantId ? { tenantId } : {});
     if (!isEmailDomainAllowed(email, appConfig?.registration?.allowedDomains)) {
       const errorMessage =
@@ -354,9 +365,68 @@ const registerUser = async (user, additionalData = {}) => {
       return { status: 403, message: errorMessage };
     }
 
-    const existingUser = await findUser({ email }, 'email _id');
+    const existingUser = await findUser({ email }, 'email _id tenantId membershipStatus');
 
     if (existingUser) {
+      const inviteMayClaimAccount = invite != null && !(await isPlatformAdminEmail(email));
+      if (invite && !inviteMayClaimAccount) {
+        logger.warn('[registerUser] refused invite acceptance for a platform admin email', {
+          tenantId: invite.tenantId,
+          inviteId: invite._id,
+        });
+      }
+
+      if (inviteMayClaimAccount && !existingUser.tenantId) {
+        await updateUser(existingUser._id, {
+          tenantId: invite.tenantId,
+          provider: provider ?? 'local',
+          username,
+          name,
+          avatar: null,
+          role: invite.requestedRole ?? SystemRoles.USER,
+          membershipStatus: InstitutionMembershipStatuses.SUSPENDED,
+        });
+
+        await activateProvisionedMember({
+          userId: existingUser._id.toString(),
+          tenantId: invite.tenantId,
+        });
+        await completeInviteAcceptance({
+          inviteId: invite._id,
+          userId: existingUser._id.toString(),
+        });
+
+        return { status: 200, message: genericVerificationMessage };
+      }
+
+      if (
+        inviteMayClaimAccount &&
+        existingUser.tenantId === invite.tenantId &&
+        existingUser.membershipStatus !== InstitutionMembershipStatuses.ACTIVE
+      ) {
+        const salt = bcrypt.genSaltSync(10);
+        await updateUser(existingUser._id, {
+          provider: provider ?? 'local',
+          username,
+          name,
+          avatar: null,
+          role: invite.requestedRole ?? SystemRoles.USER,
+          password: bcrypt.hashSync(password, salt),
+          membershipStatus: InstitutionMembershipStatuses.SUSPENDED,
+        });
+
+        await activateProvisionedMember({
+          userId: existingUser._id.toString(),
+          tenantId: invite.tenantId,
+        });
+        await completeInviteAcceptance({
+          inviteId: invite._id,
+          userId: existingUser._id.toString(),
+        });
+
+        return { status: 200, message: genericVerificationMessage };
+      }
+
       logger.info(
         'Register User - Email in use',
         { name: 'Request params:', value: user },
@@ -368,9 +438,6 @@ const registerUser = async (user, additionalData = {}) => {
       return { status: 200, message: genericVerificationMessage };
     }
 
-    //determine if this is the first registered user (not counting anonymous_user)
-    const isFirstRegisteredUser = (await countUsers()) === 0;
-
     const salt = bcrypt.genSaltSync(10);
     const newUserData = {
       provider: provider ?? 'local',
@@ -378,8 +445,14 @@ const registerUser = async (user, additionalData = {}) => {
       username,
       name,
       avatar: null,
-      role: isFirstRegisteredUser ? SystemRoles.ADMIN : SystemRoles.USER,
+      role: invite?.requestedRole ?? SystemRoles.USER,
       password: bcrypt.hashSync(password, salt),
+      ...(tenantId
+        ? {
+            tenantId,
+            membershipStatus: InstitutionMembershipStatuses.SUSPENDED,
+          }
+        : null),
       ...trustedAdditionalData,
     };
 
@@ -388,6 +461,18 @@ const registerUser = async (user, additionalData = {}) => {
 
     const newUser = await createUser(newUserData, appConfig.balance, disableTTL, true);
     newUserId = newUser._id;
+    if (tenantId) {
+      await activateProvisionedMember({
+        userId: newUserId.toString(),
+        tenantId,
+      });
+    }
+    if (invite) {
+      await completeInviteAcceptance({
+        inviteId: invite._id,
+        userId: newUserId.toString(),
+      });
+    }
     if (emailEnabled && !newUser.emailVerified) {
       await sendVerificationEmail({
         _id: newUserId,
@@ -406,6 +491,9 @@ const registerUser = async (user, additionalData = {}) => {
       logger.warn(
         `[registerUser] [Email: ${email}] [Temporary User deleted: ${JSON.stringify(result)}]`,
       );
+    }
+    if (err instanceof HttpError) {
+      return { status: err.statusCode, message: err.message };
     }
     return { status: 500, message: 'Something went wrong' };
   }
@@ -908,6 +996,8 @@ const resendVerificationEmail = async (req) => {
 
 module.exports = {
   logoutUser,
+  resendUserVerificationEmail,
+  sendVerificationEmail,
   verifyEmail,
   registerUser,
   setAuthTokens,

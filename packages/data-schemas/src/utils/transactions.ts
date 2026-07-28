@@ -53,11 +53,54 @@ export const supportsTransactions = async (
  */
 export const getTransactionSupport = async (
   mongoose: typeof import('mongoose'),
-  transactionSupportCache: boolean | null,
+  transactionSupportCache: boolean | null | undefined,
 ): Promise<boolean> => {
-  let transactionsSupported = false;
-  if (transactionSupportCache === null) {
-    transactionsSupported = await supportsTransactions(mongoose);
+  if (typeof transactionSupportCache === 'boolean') {
+    return transactionSupportCache;
   }
-  return transactionsSupported;
+  return await supportsTransactions(mongoose);
+};
+
+/**
+ * Resolves the canonical provider slug for a usage record.
+ *
+ * Usage collected from title generation, tool loops, and other secondary calls
+ * often carries a model but no provider, while tenant-attributed ledger writes
+ * require one. An explicit provider always wins; otherwise it is derived from a
+ * `provider/model` prefix or a well-known model-name family.
+ */
+export const inferProviderKey = (model?: string, providerKey?: string): string | undefined => {
+  if (typeof providerKey === 'string' && providerKey.trim()) {
+    return providerKey.trim().toLowerCase();
+  }
+
+  if (typeof model !== 'string' || !model.trim()) {
+    return undefined;
+  }
+
+  const normalized = model.trim().toLowerCase();
+  const slashIndex = normalized.indexOf('/');
+  if (slashIndex > 0) {
+    return normalized.slice(0, slashIndex);
+  }
+
+  if (
+    normalized.startsWith('gpt-') ||
+    normalized.startsWith('o1') ||
+    normalized.startsWith('o3') ||
+    normalized.startsWith('o4') ||
+    normalized.startsWith('chat-latest')
+  ) {
+    return 'openai';
+  }
+  if (normalized.startsWith('claude-')) {
+    return 'anthropic';
+  }
+  if (normalized.startsWith('gemini') || normalized.startsWith('gemma')) {
+    return 'google';
+  }
+  if (normalized.startsWith('grok-')) {
+    return 'xai';
+  }
+  return undefined;
 };

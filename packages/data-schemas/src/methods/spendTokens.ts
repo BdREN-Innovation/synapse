@@ -6,7 +6,14 @@ export interface SpendTxData {
   user: string | import('mongoose').Types.ObjectId;
   conversationId?: string;
   model?: string;
+  providerKey?: string;
+  providerModelId?: string;
   context?: string;
+  usageKind?: string;
+  usageUnit?: 'tokens' | 'images' | 'seconds' | 'operations';
+  requestKey?: string;
+  tenantId?: string;
+  requireTenant?: boolean;
   endpointTokenConfig?: Record<string, Record<string, number>> | null;
   balance?: { enabled?: boolean };
   transactions?: { enabled?: boolean };
@@ -84,6 +91,7 @@ export function createSpendTokensMethods(
       }
     } catch (err) {
       logger.error('[spendTokens]', err);
+      throw err;
     }
   }
 
@@ -152,6 +160,7 @@ export function createSpendTokensMethods(
       }
     } catch (err) {
       logger.error('[spendStructuredTokens]', err);
+      throw err;
     }
 
     return { prompt, completion };

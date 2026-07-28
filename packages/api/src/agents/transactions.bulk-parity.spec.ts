@@ -181,6 +181,25 @@ describe('Standard token parity', () => {
     expect(balance.tokenCredits).toBe(initialBalance);
   });
 
+  test('tenant ledger remains mandatory when transactions.enabled is false', async () => {
+    const userId = new mongoose.Types.ObjectId().toString();
+    const tenantId = new mongoose.Types.ObjectId().toString();
+    const entries = prepareTokenSpend(
+      txMeta(userId, {
+        tenantId,
+        providerKey: 'openai',
+        model: 'gpt-5',
+        requestKey: 'tenant-disabled-config:model-call:1',
+        transactions: { enabled: false },
+      }),
+      { promptTokens: 100, completionTokens: 50 },
+      pricing,
+    );
+
+    expect(entries).toHaveLength(2);
+    expect(entries.every((entry) => entry.doc.tenantId === tenantId)).toBe(true);
+  });
+
   test('abort context — transactions inserted, no balance update when balance not passed', async () => {
     const userId = new mongoose.Types.ObjectId().toString();
     const initialBalance = 10000000;
