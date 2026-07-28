@@ -133,10 +133,15 @@ sudo ln -sf /etc/nginx/sites-available/interpreter /etc/nginx/sites-enabled/
 sudo nginx -t && sudo systemctl reload nginx
 sudo certbot --nginx -d interpreter.bdren.ai
 
-# Firewall: 443 reachable only from the app server
+# Firewall: 443 reachable only from the app server.
+# Port 80 must stay open to the world — Let's Encrypt's HTTP-01 challenge
+# reaches it from arbitrary validation servers, at issuance AND at every
+# renewal. Restricting 80 to .213 makes certbot fail with a confusing
+# connection timeout. It only ever serves the ACME challenge and a redirect.
 sudo ufw default deny incoming
 sudo ufw default allow outgoing
 sudo ufw allow ssh
+sudo ufw allow 80/tcp
 sudo ufw allow from 203.96.189.213 to any port 443 proto tcp
 sudo ufw enable
 ```
