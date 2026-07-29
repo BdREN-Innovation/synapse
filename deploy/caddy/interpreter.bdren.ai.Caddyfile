@@ -1,0 +1,26 @@
+{
+	email nafew@bdren.net.bd
+}
+
+interpreter.bdren.ai {
+	# Only the Synapse application server may reach the interpreter. The JWT
+	# check still applies underneath; this is defence in depth, standing in for
+	# the ufw rule we cannot add without sudo.
+	@notAppServer not remote_ip 203.96.189.213
+	respond @notAppServer "Forbidden" 403
+
+	request_body {
+		max_size 50MB
+	}
+
+	reverse_proxy api:3112 {
+		# Sandbox runs may take up to SANDBOX_RUN_TIMEOUT (300s).
+		transport http {
+			read_timeout 330s
+			write_timeout 330s
+			dial_timeout 10s
+		}
+		# Stream output as produced rather than buffering it.
+		flush_interval -1
+	}
+}
