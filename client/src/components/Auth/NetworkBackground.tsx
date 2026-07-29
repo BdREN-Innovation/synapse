@@ -2,20 +2,36 @@ import { useEffect, useRef } from 'react';
 import { useTheme, isDark } from '@librechat/client';
 
 /**
- * Decorative, theme-aware network graph rendered behind the auth card —
- * echoes the Synapse logo's node-and-edge motif. Nodes drift slowly, warm
+ * Decorative, theme-aware neural network rendered behind the auth card —
+ * echoes the Synapse logo's node-and-edge motif. Small nodes drift and breathe,
+ * signals travel edge to edge like an impulse crossing a synapse, nodes warm
  * from purple toward orange near the cursor, and ripple outward on click.
- * Skips animation entirely under prefers-reduced-motion (static watermark only).
+ * Skips animation entirely under prefers-reduced-motion (static graph only).
  */
 
-const NODE_COUNT_PER_AREA = 1 / 22000; // nodes per px^2, clamped below
-const MIN_NODES = 28;
-const MAX_NODES = 56;
-const HUB_CHANCE = 0.18;
+const NODE_COUNT_PER_AREA = 1 / 9000; // nodes per px^2, clamped below
+const MIN_NODES = 70;
+const MAX_NODES = 150;
+const HUB_CHANCE = 0.14;
 const GRADIENT_NODE_CHANCE = 0.22;
-const EDGE_DISTANCE = 170;
+const EDGE_DISTANCE = 128;
 const HOVER_RADIUS = 140;
 const MAX_DPR = 2;
+
+/** Dendrite-thin nodes: the network should read as connections, not as beads. */
+const HUB_RADIUS_MIN = 2.6;
+const HUB_RADIUS_RANGE = 1.8;
+const NODE_RADIUS_MIN = 1.1;
+const NODE_RADIUS_RANGE = 1.5;
+
+/** Impulses travel at a fixed speed in px/ms so long and short edges read alike. */
+const SIGNAL_SPEED_PX_MS = 0.048;
+const SIGNAL_TARGET_COUNT = 26;
+const SIGNAL_MAX_HOPS = 9;
+const SIGNAL_SPAWN_INTERVAL_MS = 120;
+const SIGNAL_CORE_RADIUS = 2.4;
+const SIGNAL_HALO_RADIUS = 8;
+const SIGNAL_TRAIL = 0.45;
 
 const PURPLE = { r: 154, g: 39, b: 142 };
 const PURPLE_DARK = { r: 176, g: 84, b: 160 };
@@ -31,12 +47,24 @@ type Node = {
   isHub: boolean;
   isGradient: boolean;
   warmth: number;
+  /** Desynchronises the breathing so the field never throbs as one block. */
+  phase: number;
+  /** Brief flare when an impulse arrives, decays each frame. */
+  flash: number;
 };
 
 type Ripple = {
   x: number;
   y: number;
   startedAt: number;
+};
+
+type Signal = {
+  from: number;
+  to: number;
+  /** Progress along the current edge, 0..1. */
+  t: number;
+  hops: number;
 };
 
 const RIPPLE_DURATION_MS = 900;
@@ -63,12 +91,16 @@ function createNodes(width: number, height: number): Node[] {
     nodes.push({
       x: Math.random() * width,
       y: Math.random() * height,
-      vx: (Math.random() - 0.5) * 0.18,
-      vy: (Math.random() - 0.5) * 0.18,
-      radius: isHub ? 14 + Math.random() * 10 : 4 + Math.random() * 7,
+      vx: (Math.random() - 0.5) * 0.16,
+      vy: (Math.random() - 0.5) * 0.16,
+      radius: isHub
+        ? HUB_RADIUS_MIN + Math.random() * HUB_RADIUS_RANGE
+        : NODE_RADIUS_MIN + Math.random() * NODE_RADIUS_RANGE,
       isHub,
       isGradient: Math.random() < GRADIENT_NODE_CHANCE,
       warmth: 0,
+      phase: Math.random() * Math.PI * 2,
+      flash: 0,
     });
   }
   return nodes;
@@ -97,14 +129,20 @@ function NetworkBackground() {
     let height = 0;
     let dpr = Math.min(window.devicePixelRatio || 1, MAX_DPR);
     let nodes: Node[] = [];
+    /** Rebuilt in place every frame from the same pass that draws the edges, so
+     *  impulses can only ever travel along a connection the user can see. */
+    let neighbors: number[][] = [];
+    const signals: Signal[] = [];
     const ripples: Ripple[] = [];
     const pointer = { x: -9999, y: -9999, active: false };
     let animationFrame = 0;
     let running = true;
+    let lastNow = 0;
+    let lastSpawn = 0;
 
     const purpleBase = dark ? PURPLE_DARK : PURPLE;
-    const edgeAlphaScale = dark ? 0.5 : 0.32;
-    const nodeAlphaScale = dark ? 0.85 : 0.6;
+    const edgeAlphaScale = dark ? 0.42 : 0.34;
+    const nodeAlphaScale = dark ? 0.85 : 0.62;
 
     function resize() {
       const rect = wrapper!.getBoundingClientRect();
@@ -117,6 +155,8 @@ function NetworkBackground() {
       canvas!.style.height = `${height}px`;
       ctx!.setTransform(dpr, 0, 0, dpr, 0, 0);
       nodes = createNodes(width, height);
+      neighbors = nodes.map(() => []);
+      signals.length = 0;
     }
 
     function handlePointerMove(e: PointerEvent) {
@@ -141,10 +181,110 @@ function NetworkBackground() {
       });
     }
 
+    /** Picks a continuation that is not the edge the impulse just crossed, so a
+     *  signal propagates outward instead of bouncing between two nodes. */
+    function pickNextHop(current: number, previous: number): number {
+      const options = neighbors[current];
+      if (!options || options.length === 0) {
+        return -1;
+      }
+      if (options.length === 1) {
+        return options[0] === previous ? -1 : options[0];
+      }
+      for (let attempt = 0; attempt < 6; attempt++) {
+        const candidate = options[Math.floor(Math.random() * options.length)];
+        if (candidate !== previous) {
+          return candidate;
+        }
+      }
+      return -1;
+    }
+
+    /** Retries because a randomly chosen node is often an isolated one at the
+     *  edge of the field; giving up after one miss starves the population. */
+    function spawnSignal() {
+      for (let attempt = 0; attempt < 12; attempt++) {
+        const start = Math.floor(Math.random() * nodes.length);
+        const next = pickNextHop(start, -1);
+        if (next !== -1) {
+          signals.push({ from: start, to: next, t: Math.random() * 0.4, hops: 0 });
+          return;
+        }
+      }
+    }
+
+    function advanceSignals(delta: number) {
+      for (let i = signals.length - 1; i >= 0; i--) {
+        const signal = signals[i];
+        const a = nodes[signal.from];
+        const b = nodes[signal.to];
+        const dx = b.x - a.x;
+        const dy = b.y - a.y;
+        const length = Math.sqrt(dx * dx + dy * dy) || 1;
+
+        signal.t += (SIGNAL_SPEED_PX_MS * delta) / length;
+
+        if (signal.t < 1) {
+          continue;
+        }
+
+        b.flash = 1;
+        signal.hops++;
+        const next = signal.hops >= SIGNAL_MAX_HOPS ? -1 : pickNextHop(signal.to, signal.from);
+        if (next === -1) {
+          signals.splice(i, 1);
+          continue;
+        }
+        signal.from = signal.to;
+        signal.to = next;
+        signal.t = 0;
+      }
+    }
+
+    function drawSignals() {
+      for (const signal of signals) {
+        const a = nodes[signal.from];
+        const b = nodes[signal.to];
+        const x = lerp(a.x, b.x, signal.t);
+        const y = lerp(a.y, b.y, signal.t);
+
+        /** Comet tail behind the head, fading to nothing at its far end, so the
+         *  impulse reads as travelling rather than as a free-floating dot. */
+        const tailT = Math.max(0, signal.t - SIGNAL_TRAIL);
+        const tailX = lerp(a.x, b.x, tailT);
+        const tailY = lerp(a.y, b.y, tailT);
+        const trail = ctx!.createLinearGradient(tailX, tailY, x, y);
+        trail.addColorStop(0, `rgba(${ORANGE.r}, ${ORANGE.g}, ${ORANGE.b}, 0)`);
+        trail.addColorStop(1, `rgba(${ORANGE.r}, ${ORANGE.g}, ${ORANGE.b}, ${dark ? 0.75 : 0.62})`);
+        ctx!.globalAlpha = 1;
+        ctx!.strokeStyle = trail;
+        ctx!.lineWidth = 1.6;
+        ctx!.lineCap = 'round';
+        ctx!.beginPath();
+        ctx!.moveTo(tailX, tailY);
+        ctx!.lineTo(x, y);
+        ctx!.stroke();
+
+        ctx!.fillStyle = mixColor(ORANGE, ORANGE, 0);
+        ctx!.globalAlpha = dark ? 0.22 : 0.2;
+        ctx!.beginPath();
+        ctx!.arc(x, y, SIGNAL_HALO_RADIUS, 0, Math.PI * 2);
+        ctx!.fill();
+
+        ctx!.globalAlpha = dark ? 0.95 : 0.92;
+        ctx!.beginPath();
+        ctx!.arc(x, y, SIGNAL_CORE_RADIUS, 0, Math.PI * 2);
+        ctx!.fill();
+      }
+      ctx!.globalAlpha = 1;
+    }
+
     function drawFrame(now: number) {
+      const delta = lastNow === 0 ? 16 : Math.min(now - lastNow, 48);
+      lastNow = now;
+
       ctx!.clearRect(0, 0, width, height);
 
-      // Advance ripples, drop expired ones
       for (let i = ripples.length - 1; i >= 0; i--) {
         if (now - ripples[i].startedAt > RIPPLE_DURATION_MS) {
           ripples.splice(i, 1);
@@ -191,10 +331,15 @@ function NetworkBackground() {
           node.vx *= 0.96;
           node.vy *= 0.96;
           node.warmth *= 0.94;
+          node.flash *= 0.9;
         }
       }
 
-      // Edges
+      // Edges, and the adjacency the impulses follow
+      for (let i = 0; i < nodes.length; i++) {
+        neighbors[i].length = 0;
+      }
+
       for (let i = 0; i < nodes.length; i++) {
         for (let j = i + 1; j < nodes.length; j++) {
           const a = nodes[i];
@@ -202,29 +347,62 @@ function NetworkBackground() {
           const dx = a.x - b.x;
           const dy = a.y - b.y;
           const dist = Math.sqrt(dx * dx + dy * dy);
-          if (dist < EDGE_DISTANCE) {
-            const proximity = 1 - dist / EDGE_DISTANCE;
-            const warmth = Math.max(a.warmth, b.warmth);
-            const color = mixColor(purpleBase, ORANGE, warmth);
-            ctx!.strokeStyle = color;
-            ctx!.globalAlpha = proximity * edgeAlphaScale * (0.4 + warmth * 0.6);
-            ctx!.lineWidth = 1 + warmth * 1.5;
-            ctx!.beginPath();
-            ctx!.moveTo(a.x, a.y);
-            ctx!.lineTo(b.x, b.y);
-            ctx!.stroke();
+          if (dist >= EDGE_DISTANCE) {
+            continue;
+          }
+
+          neighbors[i].push(j);
+          neighbors[j].push(i);
+
+          const proximity = 1 - dist / EDGE_DISTANCE;
+          const warmth = Math.max(a.warmth, b.warmth);
+          ctx!.strokeStyle = mixColor(purpleBase, ORANGE, warmth);
+          ctx!.globalAlpha = proximity * edgeAlphaScale * (0.4 + warmth * 0.6);
+          ctx!.lineWidth = 0.7 + warmth;
+          ctx!.beginPath();
+          ctx!.moveTo(a.x, a.y);
+          ctx!.lineTo(b.x, b.y);
+          ctx!.stroke();
+        }
+      }
+
+      if (!prefersReducedMotion) {
+        advanceSignals(delta);
+        if (signals.length < SIGNAL_TARGET_COUNT && now - lastSpawn > SIGNAL_SPAWN_INTERVAL_MS) {
+          lastSpawn = now;
+          /** Refill in small batches: impulses die whenever they reach a node
+           *  with nowhere new to go, which one-per-interval cannot keep up with. */
+          const batch = Math.min(4, SIGNAL_TARGET_COUNT - signals.length);
+          for (let i = 0; i < batch; i++) {
+            spawnSignal();
           }
         }
       }
 
       // Nodes
       for (const node of nodes) {
-        const color = mixColor(node.isGradient ? INDIGO : purpleBase, ORANGE, node.warmth);
-        ctx!.globalAlpha = nodeAlphaScale * (node.isHub ? 1 : 0.85);
+        const breath = prefersReducedMotion ? 1 : 1 + Math.sin(now * 0.0011 + node.phase) * 0.16;
+        const excite = Math.max(node.warmth, node.flash);
+        const color = mixColor(node.isGradient ? INDIGO : purpleBase, ORANGE, excite);
+        const radius = node.radius * breath + excite * 1.4;
+
+        if (node.isHub || excite > 0.05) {
+          ctx!.globalAlpha = nodeAlphaScale * 0.16 * (1 + excite);
+          ctx!.fillStyle = color;
+          ctx!.beginPath();
+          ctx!.arc(node.x, node.y, radius * 3.2, 0, Math.PI * 2);
+          ctx!.fill();
+        }
+
+        ctx!.globalAlpha = nodeAlphaScale * (node.isHub ? 1 : 0.82);
         ctx!.fillStyle = color;
         ctx!.beginPath();
-        ctx!.arc(node.x, node.y, node.radius + node.warmth * 2, 0, Math.PI * 2);
+        ctx!.arc(node.x, node.y, radius, 0, Math.PI * 2);
         ctx!.fill();
+      }
+
+      if (!prefersReducedMotion) {
+        drawSignals();
       }
 
       ctx!.globalAlpha = 1;
@@ -246,6 +424,7 @@ function NetworkBackground() {
         cancelAnimationFrame(animationFrame);
       } else if (!running) {
         running = true;
+        lastNow = 0;
         animationFrame = requestAnimationFrame(loop);
       }
     }
@@ -275,7 +454,7 @@ function NetworkBackground() {
       <img
         src="assets/synapse-icon.svg"
         alt=""
-        className="absolute left-1/2 top-1/2 w-[70vmin] max-w-none -translate-x-1/2 -translate-y-1/2 select-none opacity-[0.05] dark:opacity-[0.07]"
+        className="absolute left-1/2 top-1/2 w-[34vmin] max-w-none -translate-x-1/2 -translate-y-1/2 select-none opacity-[0.04] dark:opacity-[0.06]"
         draggable={false}
       />
       <canvas ref={canvasRef} className="absolute inset-0 h-full w-full" />
