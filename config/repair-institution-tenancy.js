@@ -2,12 +2,14 @@ const path = require('path');
 require('module-alias')({ base: path.resolve(__dirname, '..', 'api') });
 
 const mongoose = require('mongoose');
-const { SystemRoles } = require('librechat-data-provider');
+const { SystemRoles, CacheKeys } = require('librechat-data-provider');
 const {
   INSTITUTION_ADMIN_ROLE,
   SystemCapabilities,
   runAsSystem,
   createModels,
+  scopedCacheKey,
+  tenantStorage,
 } = require('@librechat/data-schemas');
 
 /** Registers every schema on the connection. The `db` methods below resolve
@@ -16,6 +18,7 @@ const { Agent, AclEntry, Role } = createModels(mongoose);
 
 const connect = require('./connect');
 const db = require('~/models');
+const getLogStores = require('~/cache/getLogStores');
 const { ensureInstitutionAdminRole } = require('~/server/services/tenancy');
 
 /**
@@ -196,6 +199,25 @@ async function adoptAgents({ tenantIds, apply }) {
   }
 }
 
+/**
+ * Drops a role from the shared `ROLES` cache. Keys are tenant-scoped, so the
+ * eviction has to run in the same context the server reads from: tenant members
+ * resolve a scoped key, platform-level users an unscoped one.
+ */
+async function evictRoleCache(roleName, tenantId) {
+  const cache = getLogStores(CacheKeys.ROLES);
+  if (!cache || typeof cache.delete !== 'function') {
+    return;
+  }
+
+  if (!tenantId) {
+    await cache.delete(scopedCacheKey(roleName));
+    return;
+  }
+
+  await tenantStorage.run({ tenantId }, () => cache.delete(scopedCacheKey(roleName)));
+}
+
 async function setAgentCreate({ tenantIds, value, apply, roleNames }) {
   console.log('');
   console.log(`== AGENTS.CREATE -> ${value} for ${roleNames.join(', ')} ==`);
@@ -218,20 +240,30 @@ async function setAgentCreate({ tenantIds, value, apply, roleNames }) {
 
       const current = role.permissions?.AGENTS?.CREATE;
       const scope = tenantId ? `tenant=${tenantId}` : 'platform-level';
-      if (current === value) {
+
+      if (current !== value) {
+        console.log(`[change]  ${roleName} (${scope}) CREATE ${current} -> ${value}`);
+      } else {
         console.log(`[ok]      ${roleName} (${scope}) already CREATE=${value}`);
-        continue;
       }
 
-      console.log(`[change]  ${roleName} (${scope}) CREATE ${current} -> ${value}`);
       if (apply) {
-        await runAsSystem(() =>
-          Role.updateOne(
-            { _id: role._id },
-            { $set: { 'permissions.AGENTS.CREATE': value } },
-          ).exec(),
-        );
-        console.log(`[applied] ${roleName} (${scope})`);
+        if (current !== value) {
+          await runAsSystem(() =>
+            Role.updateOne(
+              { _id: role._id },
+              { $set: { 'permissions.AGENTS.CREATE': value } },
+            ).exec(),
+          );
+        }
+        /** Written straight to the collection so the platform-level and
+         *  tenant-scoped roles of the same name stay distinguishable, which
+         *  `getRoleByName` cannot do. That bypasses the write-through cache the
+         *  running server reads from, so evict the entry explicitly — and do it
+         *  even when the document already had the right value, otherwise a
+         *  re-run cannot repair a stale cache left by an earlier one. */
+        await evictRoleCache(roleName, tenantId);
+        console.log(`[applied] ${roleName} (${scope}) — role cache evicted`);
       }
     }
   }
