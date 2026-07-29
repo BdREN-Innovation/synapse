@@ -43,16 +43,3 @@ endpoints:
       titleModel: 'z-ai/glm-4.7'
       dropParams: ['stop']
       modelDisplayLabel: 'OpenRouter'
-modelSpecs:
-  # Users land on the document-capable agent instead of a bare model, so code
-  # execution is available without anyone having to enable it per conversation.
-  enforce: false
-  prioritize: true
-  list:
-    - name: "document-assistant"
-      label: "Document Assistant"
-      description: "Creates real Word, Excel, PowerPoint and PDF files"
-      default: true
-      preset:
-        endpoint: "agents"
-        agent_id: "agent_G0NWGg_xHC69EBHc8x9ob"

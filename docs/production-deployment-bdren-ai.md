@@ -485,28 +485,17 @@ than copying the dev key, which was exposed in a terminal transcript.
 `librechat.yaml` is gitignored, so the following lives only on the server and
 must be recreated if the host is rebuilt.
 
-**Why a default agent exists.** Code execution is an *agent capability*, not a
-model feature. A bare model chat has no tools, so asking it for a `.docx`
-produces text to copy rather than a file — correctly, but not usefully. A saved
-agent with `execute_code` is pinned as the default `modelSpec`, so users land on
-it without enabling anything per conversation:
+**The Document Assistant agent is selectable, not forced.** Code execution is an
+*agent capability*, not a model feature: a bare model chat has no tools, so
+asking it for a `.docx` yields text to copy rather than a file. The agent with
+`execute_code` supplies that, and users pick it from the agents list in the left
+menu.
 
-```yaml
-modelSpecs:
-  enforce: false
-  prioritize: true
-  list:
-    - name: "document-assistant"
-      label: "Document Assistant"
-      default: true
-      preset:
-        endpoint: "agents"
-        agent_id: "<agent id>"
-```
-
-The agent additionally needs a **public viewer ACL grant**, otherwise every user
-except its author gets an error on load, since the default spec points them all
-at an agent only the author can see.
+An earlier revision pinned it as a default `modelSpec`. That was withdrawn — it
+took over every new conversation and, worse, `modelSpecs` references an agent by
+id, and agent ids are per-database. Committing one made the shared config valid
+only on the machine whose database contained that agent, which broke local
+development outright. **Do not put agent ids in `librechat.yaml`.**
 
 **Two provider constraints the agent works around:**
 
