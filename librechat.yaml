@@ -37,9 +37,28 @@ endpoints:
       apiKey: '${OPENROUTER_KEY}'
       baseURL: 'https://openrouter.ai/api/v1'
       models:
-        default: ['z-ai/glm-4.7', 'openai/gpt-5-mini']
+        default:
+          - 'moonshotai/kimi-k2.6'
+          - 'google/gemini-3.1-flash-image'   # "Nano Banana 2"; returns images as well as text
         fetch: false            # pin models; fetch:true lists hundreds and confuses novices
       titleConvo: true
-      titleModel: 'z-ai/glm-4.7'
+      titleModel: 'moonshotai/kimi-k2.6'
       dropParams: ['stop']
       modelDisplayLabel: 'OpenRouter'
+
+    - name: 'NVIDIA'
+      apiKey: '${NVIDIA_API_KEY}'
+      baseURL: 'https://integrate.api.nvidia.com/v1'
+      models:
+        default: ['z-ai/glm-5.2']
+        fetch: false
+      titleConvo: true
+      titleModel: 'z-ai/glm-5.2'
+      addParams:
+        # camelCase is required — an unrecognised `max_tokens` is passed through as a
+        # raw model kwarg instead of setting the limit. Temperature and top_p are left
+        # out deliberately: the UI already defaults both to 1, and listing them here
+        # would pin the sliders rather than seed them.
+        maxTokens: 16384
+      dropParams: ['stop']
+      modelDisplayLabel: 'NVIDIA'

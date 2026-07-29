@@ -469,6 +469,18 @@ Two naming notes:
 `CREDS_IV`, `MEILI_MASTER_KEY`, `METRICS_SECRET`, and the admin panel's
 `SESSION_SECRET`. Dev values have been on a developer laptop.
 
+**Provider keys** are referenced from `librechat.yaml` as `${NAME}`, so each one
+named there must exist in `.env` or the endpoint will authenticate with the
+literal placeholder text and every request to it fails with a 401:
+
+| Key | Used by |
+|---|---|
+| `OPENROUTER_KEY` | OpenRouter endpoint — Kimi K2.6, Nano Banana 2 |
+| `NVIDIA_API_KEY` | NVIDIA endpoint — GLM 5.2 (`https://integrate.api.nvidia.com/v1`) |
+
+A missing provider key degrades only its own endpoint; the rest of the
+application still starts.
+
 **Carry across unchanged:** `PLATFORM_SUPERADMIN_EMAILS` (without it nobody can
 reach the platform console on a fresh database — the implicit "first user becomes
 superadmin" bootstrap was removed as a privilege-escalation hole) and
@@ -482,8 +494,10 @@ than copying the dev key, which was exposed in a terminal transcript.
 
 ## 7a. Default agent and model parameters
 
-`librechat.yaml` is gitignored, so the following lives only on the server and
-must be recreated if the host is rebuilt.
+`librechat.yaml` is version controlled (see [`../deploy/README.md`](../deploy/README.md)),
+so provider and capability settings reach the server through `git pull`. Agent
+records live in MongoDB and are *not* covered by that — they must be recreated if
+the host is rebuilt.
 
 **The Document Assistant agent is selectable, not forced.** Code execution is an
 *agent capability*, not a model feature: a bare model chat has no tools, so
@@ -508,6 +522,20 @@ development outright. **Do not put agent ids in `librechat.yaml`.**
   `messages.1.content.0.thinking.thinking: Field required`. Anthropic models are
   therefore fine for plain chat but should have `thinking` disabled before being
   given tools.
+- **`addParams` keys are camelCase.** They are matched against LangChain's
+  parameter names, so `maxTokens` sets the output limit while `max_tokens` is
+  silently forwarded as an unrecognised model kwarg. `addParams` is also applied
+  *after* the user's own settings, so anything listed there pins the
+  corresponding slider instead of seeding it — list only what genuinely must not
+  vary. This is why the NVIDIA endpoint sets `maxTokens` but leaves temperature
+  and top_p alone: the UI already defaults both to 1.
+
+**Nano Banana 2 (`google/gemini-3.1-flash-image`) returns images, not just
+text.** Custom endpoints in this fork are built around a text-chat response
+shape, so if generated pictures do not render in the conversation the fix is to
+serve the model through the existing `GeminiImageGen` tool instead of as a
+selectable chat model. That tool calls Google directly and therefore needs a
+Google API key rather than going through OpenRouter billing.
 
 ---
 
