@@ -480,6 +480,48 @@ than copying the dev key, which was exposed in a terminal transcript.
 
 ---
 
+## 7a. Default agent and model parameters
+
+`librechat.yaml` is gitignored, so the following lives only on the server and
+must be recreated if the host is rebuilt.
+
+**Why a default agent exists.** Code execution is an *agent capability*, not a
+model feature. A bare model chat has no tools, so asking it for a `.docx`
+produces text to copy rather than a file — correctly, but not usefully. A saved
+agent with `execute_code` is pinned as the default `modelSpec`, so users land on
+it without enabling anything per conversation:
+
+```yaml
+modelSpecs:
+  enforce: false
+  prioritize: true
+  list:
+    - name: "document-assistant"
+      label: "Document Assistant"
+      default: true
+      preset:
+        endpoint: "agents"
+        agent_id: "<agent id>"
+```
+
+The agent additionally needs a **public viewer ACL grant**, otherwise every user
+except its author gets an error on load, since the default spec points them all
+at an agent only the author can see.
+
+**Two provider constraints the agent works around:**
+
+- **OpenAI reasoning models** reject `reasoning_effort` together with function
+  tools on `/v1/chat/completions`. The agent sets
+  `model_parameters.useResponsesApi: true`, which supports both. Setting effort
+  to `none` also works but gives up reasoning.
+- **Anthropic extended thinking** breaks tool loops: the continuation omits the
+  thinking block and the API returns
+  `messages.1.content.0.thinking.thinking: Field required`. Anthropic models are
+  therefore fine for plain chat but should have `thinking` disabled before being
+  given tools.
+
+---
+
 ## 8. Pre-flight gates
 
 Do not open to users until all pass. Full detail in
