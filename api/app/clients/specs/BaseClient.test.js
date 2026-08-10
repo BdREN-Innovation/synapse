@@ -619,6 +619,52 @@ describe('BaseClient', () => {
       expect(TestClient.getSaveOptions).toHaveBeenCalled();
     });
 
+    test('adds and extracts follow-up prompts when the env flag is enabled', async () => {
+      const previous = process.env.FOLLOW_UP_PROMPTS;
+      process.env.FOLLOW_UP_PROMPTS = 'true';
+      try {
+        TestClient.sendCompletion.mockResolvedValueOnce({
+          completion:
+            'Mock response text\n\n<!-- librechat-follow-up-prompts:["First?","Second?","Third?"] -->',
+          metadata: undefined,
+        });
+
+        const response = await TestClient.sendMessage('Hello, world!');
+
+        expect(TestClient.sendCompletion).toHaveBeenCalledWith(
+          expect.arrayContaining([
+            expect.objectContaining({
+              role: 'user',
+              content: expect.stringContaining('follow-up questions'),
+            }),
+          ]),
+          expect.any(Object),
+        );
+        expect(response.text).toBe('Mock response text');
+        expect(response.followUpPrompts).toEqual(['First?', 'Second?', 'Third?']);
+      } finally {
+        if (previous === undefined) {
+          delete process.env.FOLLOW_UP_PROMPTS;
+        } else {
+          process.env.FOLLOW_UP_PROMPTS = previous;
+        }
+      }
+    });
+
+    test('does not augment requests when the env flag is disabled', async () => {
+      const previous = process.env.FOLLOW_UP_PROMPTS;
+      delete process.env.FOLLOW_UP_PROMPTS;
+      try {
+        await TestClient.sendMessage('Hello, world!');
+        const [payload] = TestClient.sendCompletion.mock.calls.at(-1);
+        expect(payload[0].content).not.toContain('follow-up questions');
+      } finally {
+        if (previous !== undefined) {
+          process.env.FOLLOW_UP_PROMPTS = previous;
+        }
+      }
+    });
+
     test('should return chat history', async () => {
       TestClient = initializeFakeClient(apiKey, options, messageHistory);
       const chatMessages = await TestClient.loadHistory(conversationId, '2');

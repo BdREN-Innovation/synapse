@@ -1020,6 +1020,7 @@
   "com_ui_context_subagents": "Subagents",
   "com_ui_context_summary": "Summary",
   "com_ui_context_system": "System prompt",
+  "com_ui_follow_up_prompts": "Suggested follow-up questions",
   "com_ui_context_tools": "Tool schemas",
   "com_ui_context_tools_mcp": "MCP tools",
   "com_ui_context_tools_mcp_deferred": "MCP tools (deferred)",

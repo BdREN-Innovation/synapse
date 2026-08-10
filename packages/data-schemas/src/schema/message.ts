@@ -158,6 +158,20 @@ const messageSchema: Schema<IMessage> = new Schema(
      * count), so they are not duplicated into the stored `text`.
      */
     quotes: { type: [String], default: undefined },
+    followUpPrompts: {
+      type: [String],
+      default: undefined,
+      validate: {
+        validator: (prompts: unknown[]) =>
+          prompts.length === 3 &&
+          new Set(prompts.map((prompt) => String(prompt).trim().toLowerCase())).size === 3 &&
+          prompts.every(
+            (prompt) =>
+              typeof prompt === 'string' && prompt.trim().length > 0 && prompt.trim().length <= 160,
+          ),
+        message: 'followUpPrompts must contain exactly three distinct strings under 160 characters',
+      },
+    },
     /*
     attachments: {
       type: [

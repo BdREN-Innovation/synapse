@@ -58,6 +58,7 @@ export interface IMessage extends Document {
   alwaysAppliedSkills?: string[];
   /** Verbatim excerpts the user quoted to reference on this turn. UI-only metadata for `MessageQuotes`. */
   quotes?: string[];
+  followUpPrompts?: string[];
   expiredAt?: Date | null;
   createdAt?: Date;
   updatedAt?: Date;

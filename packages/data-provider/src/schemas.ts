@@ -855,6 +855,8 @@ export const tMessageSchema = z.object({
    * request time and counted in the user message token count.
    */
   quotes: z.array(z.string()).optional(),
+  /** Compact continuation questions generated with the assistant response. */
+  followUpPrompts: z.array(z.string()).length(3).optional(),
 });
 
 /**

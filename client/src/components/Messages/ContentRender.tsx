@@ -18,6 +18,7 @@ import SiblingSwitch from '~/components/Chat/Messages/SiblingSwitch';
 import HoverButtons from '~/components/Chat/Messages/HoverButtons';
 import MessageIcon from '~/components/Chat/Messages/MessageIcon';
 import SubRow from '~/components/Chat/Messages/SubRow';
+import FollowUpPrompts from '~/components/Chat/Messages/FollowUpPrompts';
 import { fontSizeAtom } from '~/store/fontSize';
 import store from '~/store';
 
@@ -63,7 +64,39 @@ function areContentRenderPropsEqual(prev: ContentRenderProps, next: ContentRende
     return false;
   }
 
+<<<<<<< HEAD
   return areMessageFieldsEqual(prev.message, next.message);
+=======
+  const prevMsg = prev.message;
+  const nextMsg = next.message;
+  if (prevMsg === nextMsg) {
+    return true;
+  }
+  if (!prevMsg || !nextMsg) {
+    return prevMsg === nextMsg;
+  }
+
+  return (
+    prevMsg.messageId === nextMsg.messageId &&
+    prevMsg.text === nextMsg.text &&
+    prevMsg.error === nextMsg.error &&
+    prevMsg.unfinished === nextMsg.unfinished &&
+    prevMsg.createdAt === nextMsg.createdAt &&
+    prevMsg.depth === nextMsg.depth &&
+    prevMsg.isCreatedByUser === nextMsg.isCreatedByUser &&
+    (prevMsg.children?.length ?? 0) === (nextMsg.children?.length ?? 0) &&
+    prevMsg.content === nextMsg.content &&
+    prevMsg.model === nextMsg.model &&
+    prevMsg.endpoint === nextMsg.endpoint &&
+    prevMsg.iconURL === nextMsg.iconURL &&
+    prevMsg.feedback?.rating === nextMsg.feedback?.rating &&
+    (prevMsg.attachments?.length ?? 0) === (nextMsg.attachments?.length ?? 0) &&
+    (prevMsg.manualSkills?.length ?? 0) === (nextMsg.manualSkills?.length ?? 0) &&
+    (prevMsg.alwaysAppliedSkills?.length ?? 0) === (nextMsg.alwaysAppliedSkills?.length ?? 0) &&
+    (prevMsg.quotes?.length ?? 0) === (nextMsg.quotes?.length ?? 0) &&
+    (prevMsg.followUpPrompts?.join('|') ?? '') === (nextMsg.followUpPrompts?.join('|') ?? '')
+  );
+>>>>>>> 264d87e4b (✨ feat: Implement follow-up prompts feature with extraction and sanitization logic)
 }
 
 const ContentRender = memo(function ContentRender({
@@ -248,6 +281,7 @@ const ContentRender = memo(function ContentRender({
               />
             </SubRow>
           )}
+          <FollowUpPrompts message={msg} disabled={isSubmitting} />
         </div>
       </div>
     </div>

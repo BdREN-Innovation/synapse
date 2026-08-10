@@ -19,6 +19,7 @@ export default function useSubmitMessage() {
   const setActivePrompt = useSetRecoilState(store.activePromptByIndex(index));
 
   const submitMessage = useCallback(
+<<<<<<< HEAD
     (data?: {
       text: string;
       overrideFiles?: TMessage['files'];
@@ -29,6 +30,9 @@ export default function useSubmitMessage() {
       overrideExpectedPredecessorCreatedAt?: number;
       overrideQueuedMessageOrigin?: unknown;
     }) => {
+=======
+    (data?: { text: string; parentMessageId?: string; conversationId?: string | null }) => {
+>>>>>>> 264d87e4b (✨ feat: Implement follow-up prompts feature with extraction and sanitization logic)
       if (!data) {
         return console.warn('No data provided to submitMessage');
       }
@@ -44,9 +48,14 @@ export default function useSubmitMessage() {
       const submitted = ask(
         {
           text: data.text,
+<<<<<<< HEAD
           ...(data.overrideRecoverySteerId != null && {
             overrideUserMessageId: data.overrideRecoverySteerId,
           }),
+=======
+          ...(data.parentMessageId ? { parentMessageId: data.parentMessageId } : {}),
+          ...(data.conversationId ? { conversationId: data.conversationId } : {}),
+>>>>>>> 264d87e4b (✨ feat: Implement follow-up prompts feature with extraction and sanitization logic)
         },
         {
           addedConvo: addedConvo ?? undefined,

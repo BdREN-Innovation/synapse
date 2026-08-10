@@ -493,6 +493,7 @@ function anonymizeMessages(
       conversationId: newConvoId,
       sender: message.sender,
       text: message.text,
+<<<<<<< HEAD
       content: anonymizeSharedContent(message.content, {
         newConvoId,
         newMessageId,
@@ -500,6 +501,10 @@ function anonymizeMessages(
         snapshotIds,
         includeFiles,
       }),
+=======
+      content: message.content,
+      ...(message.followUpPrompts && { followUpPrompts: message.followUpPrompts }),
+>>>>>>> 264d87e4b (✨ feat: Implement follow-up prompts feature with extraction and sanitization logic)
       ...(message.iconURL && { iconURL: message.iconURL }),
       ...(model && { model }),
       isCreatedByUser: message.isCreatedByUser,

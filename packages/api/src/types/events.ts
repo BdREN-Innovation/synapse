@@ -29,6 +29,7 @@ export type FinalMessageFields = {
   conversationId?: string;
   text?: string;
   content?: unknown[];
+  followUpPrompts?: string[];
   sender?: string;
   isCreatedByUser?: boolean;
   unfinished?: boolean;
