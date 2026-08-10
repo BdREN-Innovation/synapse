@@ -7,6 +7,7 @@ import {
   EModelEndpoint,
   EToolResources,
   paramEndpoints,
+  isEphemeralAgentId,
   isAgentsEndpoint,
   AgentCapabilities,
   replaceSpecialVars,
@@ -67,7 +68,7 @@ import { applyIntentLabels, sanitizeIntentLabels } from './intent';
 import { isFatalAgentInitializationError } from './errors';
 import { applyBackgroundToolCalls } from './background';
 import { filterFilesByEndpointConfig } from '~/files';
-import { generateArtifactsPrompt } from '~/prompts';
+import { generateArtifactsPrompt, generateDefaultSystemPrompt } from '~/prompts';
 import { getProviderConfig } from '~/endpoints';
 import { primeResources } from './resources';
 
@@ -1372,19 +1373,37 @@ export async function initializeAgent(
     (agent.model_parameters as Record<string, unknown>).configuration = options.configOptions;
   }
 
-  if (agent.instructions && agent.instructions !== '') {
+  const configuredInstructions =
+    typeof agent.instructions === 'string' && agent.instructions.trim() !== ''
+      ? agent.instructions
+      : undefined;
+  const shouldApplyDefaultInstructions =
+    isInitialAgent && isEphemeralAgentId(agent.id) && !configuredInstructions;
+
+  if (configuredInstructions) {
     const resolvedInstructions = replaceSpecialVars({
-      text: agent.instructions,
+      text: configuredInstructions,
       user: req.user ? (req.user as unknown as TUser) : null,
       now: req.conversationCreatedAt,
       timezone: req.body?.timezone,
     });
-    if (hasTemporalSpecialVars(agent.instructions)) {
+    if (hasTemporalSpecialVars(configuredInstructions)) {
       agent.instructions = undefined;
       appendAdditionalInstructions(agent, resolvedInstructions);
     } else {
       agent.instructions = resolvedInstructions;
     }
+  } else if (shouldApplyDefaultInstructions) {
+    agent.instructions = generateDefaultSystemPrompt();
+    appendAdditionalInstructions(
+      agent,
+      replaceSpecialVars({
+        text: 'Current date: {{current_date}}.',
+        user: req.user ? (req.user as unknown as TUser) : null,
+        now: req.conversationCreatedAt,
+        timezone: req.body?.timezone,
+      }),
+    );
   }
 
   if (typeof agent.artifacts === 'string' && agent.artifacts !== '') {

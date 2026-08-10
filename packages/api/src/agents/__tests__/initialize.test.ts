@@ -100,6 +100,7 @@ jest.mock('~/files', () => ({
 
 jest.mock('~/prompts', () => ({
   generateArtifactsPrompt: jest.fn(() => null),
+  generateDefaultSystemPrompt: jest.fn(() => 'Default general-chat instructions'),
 }));
 
 jest.mock('../resources', () => ({
@@ -158,7 +159,7 @@ function createMocks(overrides?: {
   const resolvedOverrideProvider = overrideProvider ?? provider;
 
   const agent = {
-    id: 'agent-1',
+    id: 'agent_1',
     model,
     provider,
     tools: [],
@@ -731,6 +732,133 @@ describe('initializeAgent — stable and dynamic instruction fields', () => {
 
     expect(result.instructions).toBeUndefined();
     expect(result.additional_instructions).toBe('Conversation opened at 2023-12-31T23:59:58.000Z');
+  });
+
+  it('applies the default prompt and dynamic date to a primary ephemeral chat', async () => {
+    const { agent, req, res, loadTools, db } = createMocks();
+    agent.id = 'ephemeral-chat';
+    req.conversationCreatedAt = '2024-01-15T18:30:00.000Z';
+    req.body = { timezone: 'America/New_York' };
+
+    const result = await initializeAgent(
+      {
+        req,
+        res,
+        agent,
+        loadTools,
+        endpointOption: { endpoint: EModelEndpoint.agents },
+        allowedProviders: new Set([Providers.OPENAI]),
+        isInitialAgent: true,
+      },
+      db,
+    );
+
+    expect(result.instructions).toBe('Default general-chat instructions');
+    expect(result.additional_instructions).toBe('Current date: 2024-01-15 (Monday).');
+  });
+
+  it('treats whitespace-only instructions as unconfigured for a primary ephemeral chat', async () => {
+    const { agent, req, res, loadTools, db } = createMocks();
+    agent.id = 'ephemeral-chat';
+    agent.instructions = '   ';
+
+    const result = await initializeAgent(
+      {
+        req,
+        res,
+        agent,
+        loadTools,
+        endpointOption: { endpoint: EModelEndpoint.agents },
+        allowedProviders: new Set([Providers.OPENAI]),
+        isInitialAgent: true,
+      },
+      db,
+    );
+
+    expect(result.instructions).toBe('Default general-chat instructions');
+  });
+
+  it('preserves configured instructions on a primary ephemeral chat', async () => {
+    const { agent, req, res, loadTools, db } = createMocks();
+    agent.id = 'ephemeral-chat';
+    agent.instructions = 'Use a formal tone.';
+
+    const result = await initializeAgent(
+      {
+        req,
+        res,
+        agent,
+        loadTools,
+        endpointOption: { endpoint: EModelEndpoint.agents },
+        allowedProviders: new Set([Providers.OPENAI]),
+        isInitialAgent: true,
+      },
+      db,
+    );
+
+    expect(result.instructions).toBe('Use a formal tone.');
+    expect(result.additional_instructions).toBeUndefined();
+  });
+
+  it('applies the default prompt to an ephemeral chat even when tools are configured', async () => {
+    const { agent, req, res, loadTools, db } = createMocks();
+    agent.id = 'ephemeral-chat';
+    agent.tools = [Tools.web_search];
+
+    const result = await initializeAgent(
+      {
+        req,
+        res,
+        agent,
+        loadTools,
+        endpointOption: { endpoint: EModelEndpoint.agents },
+        allowedProviders: new Set([Providers.OPENAI]),
+        isInitialAgent: true,
+      },
+      db,
+    );
+
+    expect(result.instructions).toBe('Default general-chat instructions');
+  });
+
+  it('does not apply the default prompt to a saved agent with blank instructions', async () => {
+    const { agent, req, res, loadTools, db } = createMocks();
+
+    const result = await initializeAgent(
+      {
+        req,
+        res,
+        agent,
+        loadTools,
+        endpointOption: { endpoint: EModelEndpoint.agents },
+        allowedProviders: new Set([Providers.OPENAI]),
+        isInitialAgent: true,
+      },
+      db,
+    );
+
+    expect(result.instructions).toBeUndefined();
+    expect(result.additional_instructions).toBeUndefined();
+  });
+
+  it('does not apply the default prompt to a non-primary ephemeral agent', async () => {
+    const { agent, req, res, loadTools, db } = createMocks();
+    agent.id = 'ephemeral-subagent';
+
+    const result = await initializeAgent(
+      {
+        req,
+        res,
+        agent,
+        loadTools,
+        endpointOption: { endpoint: EModelEndpoint.agents },
+        allowedProviders: new Set([Providers.OPENAI]),
+      },
+      db,
+    );
+
+    expect(result.instructions).toBeUndefined();
+    expect(result.additional_instructions).toBeUndefined();
   });
 
   it('resolves temporal special vars in the request timezone', async () => {

@@ -8,8 +8,10 @@ import {
   isDeepSeekReasoningProvider,
   shouldReplayReasoningContent,
   anyAgentReplaysReasoningContent,
+  composeRunPrompt,
 } from './run';
 
+<<<<<<< HEAD
 describe('getRunDiscoveredTools', () => {
   it('uses the run discovery snapshot instead of reconstructing it from messages', () => {
     const messages = [
@@ -40,6 +42,32 @@ describe('getRunDiscoveredTools', () => {
     expect(getRunDiscoveredTools({ getRunMessages: () => messages })).toEqual([
       'save_issue_mcp_linear',
     ]);
+=======
+describe('composeRunPrompt', () => {
+  it('always includes policy but only includes active capabilities', () => {
+    const plain = composeRunPrompt({
+      instructions: 'General role',
+      activeToolNames: [],
+      additionalInstructions: 'Current date',
+    });
+    expect(plain.systemContent).toContain('privacy');
+    expect(plain.systemContent).toContain('General role');
+    expect(plain.systemContent).not.toContain('available tools');
+    expect(plain.systemContent).not.toContain('search or retrieval');
+    expect(plain.additionalInstructions).toBe('Current date');
+
+    const documentAgent = composeRunPrompt({
+      instructions: 'Analyze supplied documents.',
+      activeToolNames: ['file_search'],
+      toolContextMap: { file_search: 'Use the authorized file search tool.' },
+      dynamicToolContextMap: { file_search: 'Attached document context.' },
+    });
+    expect(documentAgent.systemContent).toContain('available tools');
+    expect(documentAgent.systemContent).toContain('search or retrieval');
+    expect(documentAgent.systemContent).toContain('source facts');
+    expect(documentAgent.systemContent).toContain('Analyze supplied documents.');
+    expect(documentAgent.additionalInstructions).toBe('Attached document context.');
+>>>>>>> cc8d89419 (✨ feat: Enhance agent initialization and prompt capabilities with new default system prompts and metadata tracking)
   });
 });
 

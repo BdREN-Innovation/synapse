@@ -1,6 +1,11 @@
 const { Constants } = require('librechat-data-provider');
 const { HumanMessage, AIMessage, SystemMessage } = require('@librechat/agents/langchain/messages');
-const { formatMessage, formatLangChainMessages, formatFromLangChain } = require('./formatMessages');
+const {
+  formatMessage,
+  formatLangChainMessages,
+  formatFromLangChain,
+  formatAgentMessages,
+} = require('./formatMessages');
 
 describe('formatMessage', () => {
   it('formats user message', () => {
@@ -272,5 +277,22 @@ describe('formatLangChainMessages', () => {
 
       expect(formatFromLangChain(message)).toEqual(expected);
     });
+  });
+});
+
+describe('formatAgentMessages conversation context', () => {
+  it('preserves the clarification, follow-up answer, and current request in order', () => {
+    const result = formatAgentMessages([
+      { role: 'user', content: 'Write a leave application to my manager.' },
+      { role: 'assistant', content: 'What is the reason and start date?' },
+      { role: 'user', content: 'Sick leave. Tomorrow.' },
+    ]);
+
+    expect(result.map((message) => message._getType())).toEqual(['human', 'ai', 'human']);
+    expect(result.map((message) => message.content)).toEqual([
+      [{ type: 'text', text: 'Write a leave application to my manager.' }],
+      [{ type: 'text', text: 'What is the reason and start date?' }],
+      [{ type: 'text', text: 'Sick leave. Tomorrow.' }],
+    ]);
   });
 });

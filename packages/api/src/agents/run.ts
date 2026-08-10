@@ -5,9 +5,11 @@ import {
   EModelEndpoint,
   MAX_SUBAGENT_DEPTH,
   MAX_SUBAGENT_RUN_CONFIGS,
+  Tools,
   extractEnvVariable,
   providerEndpointMap,
   normalizeEndpointName,
+  isEphemeralAgentId,
 } from 'librechat-data-provider';
 import type {
   SummarizationConfig as AgentSummarizationConfig,
@@ -65,6 +67,14 @@ import { buildLangfuseConfig } from '~/langfuse/config';
 import { resolveConfigHeaders } from '~/utils/headers';
 import { applyTestRunHook } from '~/agents/testHook';
 import { isUserProvided } from '~/utils/common';
+import {
+  composePrompt,
+  generateFileCapabilityPrompt,
+  generateMandatoryPolicyPrompt,
+  generateSearchCapabilityPrompt,
+  generateToolCapabilityPrompt,
+  getDefaultPromptMetadata,
+} from '~/prompts';
 
 /** Expected shape of JSON tool search results */
 interface ToolSearchJsonResult {
@@ -266,6 +276,69 @@ const customProviders = new Set([
   KnownEndpoints.ollama,
 ]);
 
+export function composeRunPrompt({
+  instructions,
+  additionalInstructions,
+  toolContextMap,
+  dynamicToolContextMap,
+  activeToolNames,
+  hasAskTool = false,
+}: {
+  instructions?: string;
+  additionalInstructions?: string;
+  toolContextMap?: Record<string, unknown>;
+  dynamicToolContextMap?: Record<string, unknown>;
+  activeToolNames: Iterable<string>;
+  hasAskTool?: boolean;
+}): {
+  systemContent: string;
+  additionalInstructions: string;
+  includedLayers: string[];
+} {
+  const names = new Set(activeToolNames);
+  for (const name of Object.keys(toolContextMap ?? {})) {
+    names.add(name);
+  }
+
+  const hasTools = names.size > 0 || hasAskTool;
+  const hasSearch = names.has(Tools.web_search) || names.has(Tools.file_search);
+  const hasFiles = names.has(Tools.file_search);
+  const toolInstructions = Object.values(toolContextMap ?? {})
+    .filter((value): value is string => typeof value === 'string' && value !== '')
+    .join('\n\n');
+  const dynamicToolInstructions = Object.values(dynamicToolContextMap ?? {})
+    .filter((value): value is string => typeof value === 'string' && value !== '')
+    .join('\n\n');
+  const roleLayer = instructions?.includes('general-purpose AI assistant in BdREN Synapse')
+    ? 'general_role'
+    : 'configured_role';
+  const stablePrompt = composePrompt([
+    { id: 'mandatory_policy', content: generateMandatoryPolicyPrompt() },
+    { id: roleLayer, content: instructions },
+    {
+      id: 'tools',
+      content: hasTools
+        ? composePrompt([
+            { id: 'tools', content: generateToolCapabilityPrompt() },
+            { id: 'tools', content: toolInstructions },
+          ]).content
+        : undefined,
+    },
+    { id: 'search', content: hasSearch ? generateSearchCapabilityPrompt() : undefined },
+    { id: 'files', content: hasFiles ? generateFileCapabilityPrompt() : undefined },
+  ]);
+  const dynamicPrompt = composePrompt([
+    { id: 'runtime', content: dynamicToolInstructions },
+    { id: 'runtime', content: additionalInstructions },
+  ]);
+
+  return {
+    systemContent: stablePrompt.content,
+    additionalInstructions: dynamicPrompt.content,
+    includedLayers: stablePrompt.includedLayers,
+  };
+}
+
 type AgentReasoningKey = 'reasoning_content' | 'reasoning';
 
 function includesOpenRouter(value?: string | null): boolean {
@@ -408,6 +481,7 @@ type RunAgent = Omit<Agent, 'tools'> & {
   subagents?: AgentSubagentsConfig;
 };
 
+<<<<<<< HEAD
 type LazySubagentAgent = Pick<
   RunAgent,
   | 'id'
@@ -441,6 +515,41 @@ type SubagentTreeNode = Pick<
   subagentAgentConfigs?: SubagentTreeNode[];
   lazySubagentConfigs?: SubagentTreeNode[];
 };
+=======
+function buildPromptTraceMetadata(
+  agent: RunAgent | undefined,
+  messages: BaseMessage[] | undefined,
+): Record<string, string | number | boolean> | undefined {
+  const isPrimaryEphemeral = agent != null && isEphemeralAgentId(agent.id);
+  if (!isPrimaryEphemeral) {
+    return undefined;
+  }
+
+  const promptMetadata = getDefaultPromptMetadata();
+  const activeToolNames = (agent?.tools ?? [])
+    .map((tool) => (typeof tool === 'string' ? tool : tool?.name))
+    .filter((name): name is string => typeof name === 'string');
+  const layers = [
+    'mandatory_policy',
+    isPrimaryEphemeral ? 'general_role' : 'configured_role',
+    ...(activeToolNames.length > 0 ? ['tools'] : []),
+  ];
+  const messageRoles = (messages ?? []).map((message) => {
+    const role = message._getType();
+    return role === 'human' ? 'user' : role === 'ai' ? 'assistant' : role;
+  });
+
+  return {
+    ...(promptMetadata ?? {}),
+    prompt_scope: 'primary_ephemeral',
+    prompt_layers: layers.join(','),
+    conversation_turn_count: messages?.length ?? 0,
+    message_roles: messageRoles.join(','),
+    selected_provider: agent.provider ?? 'unknown',
+    selected_model: agent.model_parameters?.model ?? agent.model ?? 'unknown',
+  };
+}
+>>>>>>> cc8d89419 (✨ feat: Enhance agent initialization and prompt capabilities with new default system prompts and metadata tracking)
 
 function isNonEmptyString(value: unknown): value is string {
   return typeof value === 'string' && value.trim().length > 0;
@@ -1341,21 +1450,6 @@ export async function createRun({
       modelParameters,
     ) as t.RunLLMConfig;
 
-    const joinInstructionMap = (map?: Record<string, unknown>) =>
-      Object.values(map ?? {})
-        .filter((value): value is string => typeof value === 'string' && value !== '')
-        .join('\n')
-        .trim();
-
-    const toolInstructions = joinInstructionMap(agent.toolContextMap);
-    const dynamicToolInstructions = joinInstructionMap(agent.dynamicToolContextMap);
-
-    const systemContent = [toolInstructions, agent.instructions ?? ''].join('\n').trim();
-
-    const additionalInstructions = [dynamicToolInstructions, agent.additional_instructions ?? '']
-      .join('\n')
-      .trim();
-
     /**
      * Resolve request-based headers across provider-specific header locations
      * (OpenAI `configuration.defaultHeaders`, Anthropic `clientOptions.defaultHeaders`,
@@ -1463,6 +1557,44 @@ export async function createRun({
           createAskUserQuestionTool(toolInputValidationErrors) as unknown as GenericTool,
         ];
       }
+    }
+
+    const activeToolNames = new Set<string>();
+    for (const tool of tools ?? []) {
+      if (typeof tool === 'string') {
+        activeToolNames.add(tool);
+      } else if (tool && typeof tool === 'object' && 'name' in tool) {
+        const name = (tool as { name?: unknown }).name;
+        if (typeof name === 'string') {
+          activeToolNames.add(name);
+        }
+      }
+    }
+    for (const definition of toolDefinitions) {
+      activeToolNames.add(definition.name);
+    }
+    for (const name of toolRegistry?.keys() ?? []) {
+      activeToolNames.add(name);
+    }
+    for (const name of Object.keys(agent.toolContextMap ?? {})) {
+      activeToolNames.add(name);
+    }
+
+    const prompt = composeRunPrompt({
+      instructions: agent.instructions ?? undefined,
+      additionalInstructions: agent.additional_instructions ?? undefined,
+      toolContextMap: agent.toolContextMap,
+      dynamicToolContextMap: agent.dynamicToolContextMap,
+      activeToolNames,
+      hasAskTool: (askGraphTools?.length ?? 0) > 0,
+    });
+
+    const systemContent = prompt.systemContent;
+    const additionalInstructions = prompt.additionalInstructions;
+    if (process.env.NODE_ENV === 'development') {
+      logger.debug(
+        `[PromptLayers] agent=${agent.id} layers=${prompt.includedLayers.join(',')} stableChars=${systemContent.length} dynamicChars=${additionalInstructions.length}`,
+      );
     }
 
     const effectiveMaxContextTokens = computeEffectiveMaxContextTokens(
@@ -1722,9 +1854,14 @@ export async function createRun({
     // tracing is enabled. Requires @librechat/agents >= 3.2.21.
     langfuse: buildLangfuseConfig({
       appConfig,
+<<<<<<< HEAD
       runId,
       tenantId: tenantId ?? user?.tenantId,
       centralTraceExportEnabled,
+=======
+      tenantId: tenantId ?? user?.tenantId,
+      metadata: buildPromptTraceMetadata(agents[0], messages),
+>>>>>>> cc8d89419 (✨ feat: Enhance agent initialization and prompt capabilities with new default system prompts and metadata tracking)
     }),
     ...(enableToolOutputReferences && {
       toolOutputReferences: { enabled: true },

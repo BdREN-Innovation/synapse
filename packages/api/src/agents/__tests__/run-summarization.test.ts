@@ -545,8 +545,10 @@ describe('stable/dynamic system instructions', () => {
       ],
     });
 
-    expect(agents[0].instructions).toBe('Static tool instructions\nBase instructions');
-    expect(agents[0].additional_instructions).toBe('Conversation Date & Time: anchor\nMemory tail');
+    expect(agents[0].instructions).toContain('Static tool instructions');
+    expect(agents[0].instructions).toContain('Base instructions');
+    expect(agents[0].additional_instructions).toContain('Conversation Date & Time: anchor');
+    expect(agents[0].additional_instructions).toContain('Memory tail');
   });
 });
 
@@ -1331,6 +1333,28 @@ describe('Langfuse run config', () => {
       metadata: { 'librechat.tenant.id': 'tenant-2' },
       tags: ['tenant:tenant-2'],
     });
+  });
+
+  it('records safe prompt and conversation metadata for a primary ephemeral run', async () => {
+    const callArgs = await callAndCaptureRunConfig({
+      overrides: { id: 'ephemeral-chat' },
+    });
+    const langfuse = callArgs.langfuse as Record<string, unknown>;
+    const metadata = langfuse.metadata as Record<string, unknown>;
+
+    expect(metadata).toEqual(
+      expect.objectContaining({
+        prompt_id: 'bdren-general',
+        prompt_version: '3',
+        prompt_hash: expect.stringMatching(/^[a-f0-9]{64}$/),
+        prompt_scope: 'primary_ephemeral',
+        prompt_layers: 'mandatory_policy,general_role',
+        conversation_turn_count: 0,
+        message_roles: '',
+        selected_provider: 'openAI',
+        selected_model: 'gpt-4o',
+      }),
+    );
   });
 
   it('adds tenant Langfuse credentials from tenant-scoped app config', async () => {
