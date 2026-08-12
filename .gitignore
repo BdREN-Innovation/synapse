@@ -6,6 +6,9 @@ meili_data*
 data/
 logs
 *.log
+skill/
+plans/
+docs/
 
 # Runtime data
 pids
@@ -183,6 +186,7 @@ claude-flow.config.json
 *.sqlite-wal
 claude-flow
 .playwright-mcp/*
+
 # Removed Windows wrapper files per user request
 hive-mind-prompt-*.txt
 CLAUDE.md
