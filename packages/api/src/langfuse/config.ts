@@ -131,25 +131,19 @@ export function buildLangfuseConfig({
   appConfig,
   runId,
   tenantId,
-<<<<<<< HEAD
   centralTraceExportEnabled = true,
-=======
   metadata: promptMetadata,
->>>>>>> cc8d89419 (✨ feat: Enhance agent initialization and prompt capabilities with new default system prompts and metadata tracking)
 }: {
   appConfig?: AppConfig;
   runId?: string;
   tenantId?: string;
-<<<<<<< HEAD
   /**
    * Defaults to true. Set false to suppress central Langfuse export for this
    * run. Fanout deployments stamp a routing attribute that the collector uses
    * to drop the central pipeline while preserving tenant fanout when available.
    */
   centralTraceExportEnabled?: boolean;
-=======
   metadata?: LangfuseRunConfig['metadata'];
->>>>>>> cc8d89419 (✨ feat: Enhance agent initialization and prompt capabilities with new default system prompts and metadata tracking)
 } = {}): LangfuseRunConfig {
   const normalizedTenantId = normalizeString(tenantId);
   const config = appConfig?.langfuse;

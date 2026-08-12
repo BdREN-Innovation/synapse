@@ -481,7 +481,6 @@ type RunAgent = Omit<Agent, 'tools'> & {
   subagents?: AgentSubagentsConfig;
 };
 
-<<<<<<< HEAD
 type LazySubagentAgent = Pick<
   RunAgent,
   | 'id'
@@ -515,7 +514,7 @@ type SubagentTreeNode = Pick<
   subagentAgentConfigs?: SubagentTreeNode[];
   lazySubagentConfigs?: SubagentTreeNode[];
 };
-=======
+
 function buildPromptTraceMetadata(
   agent: RunAgent | undefined,
   messages: BaseMessage[] | undefined,
@@ -549,7 +548,6 @@ function buildPromptTraceMetadata(
     selected_model: agent.model_parameters?.model ?? agent.model ?? 'unknown',
   };
 }
->>>>>>> cc8d89419 (✨ feat: Enhance agent initialization and prompt capabilities with new default system prompts and metadata tracking)
 
 function isNonEmptyString(value: unknown): value is string {
   return typeof value === 'string' && value.trim().length > 0;
@@ -1854,14 +1852,10 @@ export async function createRun({
     // tracing is enabled. Requires @librechat/agents >= 3.2.21.
     langfuse: buildLangfuseConfig({
       appConfig,
-<<<<<<< HEAD
       runId,
       tenantId: tenantId ?? user?.tenantId,
       centralTraceExportEnabled,
-=======
-      tenantId: tenantId ?? user?.tenantId,
       metadata: buildPromptTraceMetadata(agents[0], messages),
->>>>>>> cc8d89419 (✨ feat: Enhance agent initialization and prompt capabilities with new default system prompts and metadata tracking)
     }),
     ...(enableToolOutputReferences && {
       toolOutputReferences: { enabled: true },

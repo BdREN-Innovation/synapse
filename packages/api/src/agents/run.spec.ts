@@ -11,7 +11,6 @@ import {
   composeRunPrompt,
 } from './run';
 
-<<<<<<< HEAD
 describe('getRunDiscoveredTools', () => {
   it('uses the run discovery snapshot instead of reconstructing it from messages', () => {
     const messages = [
@@ -42,7 +41,9 @@ describe('getRunDiscoveredTools', () => {
     expect(getRunDiscoveredTools({ getRunMessages: () => messages })).toEqual([
       'save_issue_mcp_linear',
     ]);
-=======
+  });
+});
+
 describe('composeRunPrompt', () => {
   it('always includes policy but only includes active capabilities', () => {
     const plain = composeRunPrompt({
@@ -67,7 +68,6 @@ describe('composeRunPrompt', () => {
     expect(documentAgent.systemContent).toContain('source facts');
     expect(documentAgent.systemContent).toContain('Analyze supplied documents.');
     expect(documentAgent.additionalInstructions).toBe('Attached document context.');
->>>>>>> cc8d89419 (✨ feat: Enhance agent initialization and prompt capabilities with new default system prompts and metadata tracking)
   });
 });
 
