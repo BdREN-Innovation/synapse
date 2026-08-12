@@ -1,0 +1,91 @@
+name: synapse
+
+services:
+  caddy:
+    image: caddy:2.10.2-alpine
+    container_name: synapse-caddy
+    restart: always
+    ports:
+      - "80:80"
+      - "443:443"
+      - "127.0.0.1:3080:3080"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - /opt/synapse/config/Caddyfile:/etc/caddy/Caddyfile:ro
+      - /opt/synapse/caddy/data:/data
+      - /opt/synapse/caddy/config:/config
+    networks:
+      - synapse
+
+  admin-panel:
+    image: ${ADMIN_PANEL_IMAGE:?Set ADMIN_PANEL_IMAGE in /opt/synapse/shared/.env}
+    container_name: synapse-admin-panel
+    restart: always
+    depends_on:
+      - caddy
+    environment:
+      PORT: 3000
+      SESSION_SECRET: ${ADMIN_PANEL_SESSION_SECRET:?Set ADMIN_PANEL_SESSION_SECRET}
+      API_SERVER_URL: http://caddy:3080
+      VITE_API_BASE_URL: https://${APP_DOMAIN:?Set APP_DOMAIN}
+      SESSION_COOKIE_SECURE: ${ADMIN_PANEL_SESSION_COOKIE_SECURE:-true}
+    networks:
+      - synapse
+
+  mongodb:
+    image: mongo:8.0.20
+    container_name: synapse-mongodb
+    restart: always
+    command: mongod --noauth
+    volumes:
+      - /opt/synapse/data/mongodb:/data/db
+    networks:
+      synapse:
+        aliases: [mongodb]
+
+  meilisearch:
+    image: getmeili/meilisearch:v1.35.1
+    container_name: synapse-meilisearch
+    restart: always
+    env_file: /opt/synapse/shared/.env
+    environment:
+      MEILI_HOST: http://meilisearch:7700
+      MEILI_NO_ANALYTICS: "true"
+    volumes:
+      - /opt/synapse/data/meilisearch:/meili_data
+    networks:
+      synapse:
+        aliases: [meilisearch]
+
+  vectordb:
+    image: pgvector/pgvector:0.8.0-pg15-trixie
+    container_name: synapse-vectordb
+    restart: always
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-mydatabase}
+      POSTGRES_USER: ${POSTGRES_USER:-myuser}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD}
+    volumes:
+      - /opt/synapse/data/vectordb:/var/lib/postgresql/data
+    networks:
+      synapse:
+        aliases: [vectordb]
+
+  rag-api:
+    image: ${RAG_IMAGE:?Set RAG_IMAGE in /opt/synapse/shared/.env}
+    container_name: synapse-rag-api
+    restart: always
+    depends_on:
+      - vectordb
+    env_file: /opt/synapse/shared/.env
+    environment:
+      DB_HOST: vectordb
+      RAG_PORT: ${RAG_PORT:-8000}
+    networks:
+      synapse:
+        aliases: [rag_api]
+
+networks:
+  synapse:
+    name: synapse

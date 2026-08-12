@@ -1,0 +1,52 @@
+name: Production Gate
+
+on:
+  pull_request:
+    branches: [production]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: production-gate-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  gate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 150
+    steps:
+      - uses: actions/checkout@v4
+      - name: Require main as the production source branch
+        if: github.event_name == 'pull_request'
+        env:
+          SOURCE_BRANCH: ${{ github.event.pull_request.head.ref }}
+        run: test "$SOURCE_BRANCH" = main
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24.16.0'
+          cache: npm
+      - run: npm ci
+      - name: Lint and formatting checks
+        run: |
+          npm run lint
+          npm run sort-imports:check
+          npx prettier --check "{api,client,packages}/**/*.{js,jsx,ts,tsx}"
+      - name: Build packages and frontend
+        run: npm run build:safe
+      - name: Run workspace tests
+        run: npm run test:all
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+      - name: Build production image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile.multi
+          target: api-build
+          platforms: linux/amd64
+          push: false
+          tags: synapse-api:gate
+          cache-from: type=gha,scope=production-gate
+          cache-to: type=gha,mode=max,scope=production-gate

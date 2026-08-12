@@ -1,0 +1,48 @@
+name: Production Deploy
+
+on:
+  push:
+    branches: [production]
+  workflow_dispatch:
+    inputs:
+      rollback_sha:
+        description: 'Existing 40-character image SHA to deploy as a rollback (blank = current commit)'
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: production-deploy
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: [self-hosted, linux, x64, synapse-production]
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 1
+      - name: Build immutable production image
+        if: github.event_name == 'push'
+        env:
+          BUILD_SHA: ${{ github.sha }}
+          BUILD_BRANCH: ${{ github.ref_name }}
+        run: |
+          docker build --file Dockerfile.multi --target api-build \
+            --build-arg BUILD_COMMIT="$BUILD_SHA" \
+            --build-arg BUILD_BRANCH="$BUILD_BRANCH" \
+            --build-arg BUILD_DATE="$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            --tag "synapse-api:$BUILD_SHA" .
+      - name: Deploy current commit
+        if: github.event_name == 'push'
+        run: sudo /opt/synapse/bin/deploy "${{ github.sha }}"
+      - name: Roll back to selected image
+        if: github.event_name == 'workflow_dispatch'
+        run: sudo /opt/synapse/bin/rollback "${{ inputs.rollback_sha }}"
+      - name: Show deployment state
+        if: always()
+        run: sudo /opt/synapse/bin/status

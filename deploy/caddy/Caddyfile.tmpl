@@ -1,0 +1,18 @@
+{
+  email __CADDY_EMAIL__
+}
+
+__APP_DOMAIN__ {
+  encode gzip
+  reverse_proxy __ACTIVE_UPSTREAM__
+}
+
+__ADMIN_DOMAIN__ {
+  encode gzip
+  reverse_proxy admin-panel:3000
+}
+
+# Internal API endpoint used by the stable admin panel.
+:3080 {
+  reverse_proxy __ACTIVE_UPSTREAM__
+}
