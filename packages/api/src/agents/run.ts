@@ -515,40 +515,6 @@ type SubagentTreeNode = Pick<
   lazySubagentConfigs?: SubagentTreeNode[];
 };
 
-function buildPromptTraceMetadata(
-  agent: RunAgent | undefined,
-  messages: BaseMessage[] | undefined,
-): Record<string, string | number | boolean> | undefined {
-  const isPrimaryEphemeral = agent != null && isEphemeralAgentId(agent.id);
-  if (!isPrimaryEphemeral) {
-    return undefined;
-  }
-
-  const promptMetadata = getDefaultPromptMetadata();
-  const activeToolNames = (agent?.tools ?? [])
-    .map((tool) => (typeof tool === 'string' ? tool : tool?.name))
-    .filter((name): name is string => typeof name === 'string');
-  const layers = [
-    'mandatory_policy',
-    isPrimaryEphemeral ? 'general_role' : 'configured_role',
-    ...(activeToolNames.length > 0 ? ['tools'] : []),
-  ];
-  const messageRoles = (messages ?? []).map((message) => {
-    const role = message._getType();
-    return role === 'human' ? 'user' : role === 'ai' ? 'assistant' : role;
-  });
-
-  return {
-    ...(promptMetadata ?? {}),
-    prompt_scope: 'primary_ephemeral',
-    prompt_layers: layers.join(','),
-    conversation_turn_count: messages?.length ?? 0,
-    message_roles: messageRoles.join(','),
-    selected_provider: agent.provider ?? 'unknown',
-    selected_model: agent.model_parameters?.model ?? agent.model ?? 'unknown',
-  };
-}
-
 function isNonEmptyString(value: unknown): value is string {
   return typeof value === 'string' && value.trim().length > 0;
 }
@@ -1855,7 +1821,6 @@ export async function createRun({
       runId,
       tenantId: tenantId ?? user?.tenantId,
       centralTraceExportEnabled,
-      metadata: buildPromptTraceMetadata(agents[0], messages),
     }),
     ...(enableToolOutputReferences && {
       toolOutputReferences: { enabled: true },

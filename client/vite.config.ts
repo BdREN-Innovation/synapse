@@ -76,7 +76,16 @@ export default defineConfig(({ command }) => ({
         return NODE_POLYFILL_SHIMS[id] ?? null;
       },
     },
-    nodePolyfills(),
+    /**
+     * `crypto` is excluded: nothing in the client bundle imports Node's `crypto`
+     * module (confirmed via `npm ls crypto-browserify`, whose only path is this
+     * plugin's own `node-stdlib-browser` dependency). Polyfilling it pulls in the
+     * legacy crypto-browserify/safe-buffer/ripemd160/create-ecdh chain, and
+     * Rolldown's dev-mode dependency-optimizer scan crashes non-deterministically
+     * on various leaf packages in that chain that call `require('buffer')`
+     * (works fine in production builds, which don't use this scanner).
+     */
+    nodePolyfills({ exclude: ['crypto'] }),
     {
       name: 'emit-sw-heal',
       apply: 'build',

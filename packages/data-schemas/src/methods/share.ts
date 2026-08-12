@@ -500,7 +500,6 @@ function anonymizeMessages(
         snapshotIds,
         includeFiles,
       }),
-      ...(message.followUpPrompts && { followUpPrompts: message.followUpPrompts }),
       ...(message.iconURL && { iconURL: message.iconURL }),
       ...(model && { model }),
       isCreatedByUser: message.isCreatedByUser,
