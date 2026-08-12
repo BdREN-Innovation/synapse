@@ -17,7 +17,6 @@
     "rebuild:package-lock": "node config/packages",
     "reinstall": "node config/update.js -l -g",
     "smart-reinstall": "node config/smart-reinstall.js",
-    "sync": "node config/smart-reinstall.js --skip-client",
     "b:reinstall": "bun config/update.js -b -l -g",
     "reinstall:docker": "node config/update.js -d -g",
     "update:local": "node config/update.js -l",

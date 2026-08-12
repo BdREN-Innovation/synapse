@@ -132,7 +132,6 @@ export function buildLangfuseConfig({
   runId,
   tenantId,
   centralTraceExportEnabled = true,
-  metadata: promptMetadata,
 }: {
   appConfig?: AppConfig;
   runId?: string;
@@ -143,7 +142,6 @@ export function buildLangfuseConfig({
    * to drop the central pipeline while preserving tenant fanout when available.
    */
   centralTraceExportEnabled?: boolean;
-  metadata?: LangfuseRunConfig['metadata'];
 } = {}): LangfuseRunConfig {
   const normalizedTenantId = normalizeString(tenantId);
   const config = appConfig?.langfuse;

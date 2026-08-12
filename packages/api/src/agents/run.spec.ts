@@ -44,33 +44,6 @@ describe('getRunDiscoveredTools', () => {
   });
 });
 
-describe('composeRunPrompt', () => {
-  it('always includes policy but only includes active capabilities', () => {
-    const plain = composeRunPrompt({
-      instructions: 'General role',
-      activeToolNames: [],
-      additionalInstructions: 'Current date',
-    });
-    expect(plain.systemContent).toContain('privacy');
-    expect(plain.systemContent).toContain('General role');
-    expect(plain.systemContent).not.toContain('available tools');
-    expect(plain.systemContent).not.toContain('search or retrieval');
-    expect(plain.additionalInstructions).toBe('Current date');
-
-    const documentAgent = composeRunPrompt({
-      instructions: 'Analyze supplied documents.',
-      activeToolNames: ['file_search'],
-      toolContextMap: { file_search: 'Use the authorized file search tool.' },
-      dynamicToolContextMap: { file_search: 'Attached document context.' },
-    });
-    expect(documentAgent.systemContent).toContain('available tools');
-    expect(documentAgent.systemContent).toContain('search or retrieval');
-    expect(documentAgent.systemContent).toContain('source facts');
-    expect(documentAgent.systemContent).toContain('Analyze supplied documents.');
-    expect(documentAgent.additionalInstructions).toBe('Attached document context.');
-  });
-});
-
 describe('extractDiscoveredToolsFromHistory', () => {
   it('extracts tool names from tool_search JSON output', () => {
     const toolSearchOutput = JSON.stringify({
