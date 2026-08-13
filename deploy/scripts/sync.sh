@@ -13,7 +13,8 @@ temp_dir=$(mktemp -d)
 trap 'rm -rf "$temp_dir"' EXIT
 git -C "$repo_root" archive --format=tar HEAD deploy/scripts deploy/compose/candidate.yml deploy/server.env.example | tar -xf - -C "$temp_dir"
 
-for script in common deploy rollback status cleanup sync; do
+install -m 0750 "$temp_dir/deploy/scripts/common.sh" "$CICD_ROOT/bin/common.sh"
+for script in deploy rollback status cleanup sync; do
   install -m 0750 "$temp_dir/deploy/scripts/$script.sh" "$CICD_ROOT/bin/$script"
 done
 install -m 0644 "$temp_dir/deploy/server.env.example" "$CONFIG_DIR/deploy.env.example"
