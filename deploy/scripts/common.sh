@@ -1,38 +1,66 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-ROOT_DIR=${SYNAPSE_ROOT:-/opt/synapse}
-CONFIG_DIR="$ROOT_DIR/config"
-SHARED_DIR="$ROOT_DIR/shared"
-STATE_DIR="$ROOT_DIR/state"
-RELEASE_DIR="$ROOT_DIR/releases"
-ENV_FILE="$SHARED_DIR/.env"
+CICD_ROOT=${SYNAPSE_CICD_ROOT:-/home/bdren/synapse}
+CONFIG_DIR="$CICD_ROOT/config"
+CANDIDATE_DIR="$CICD_ROOT/candidate"
+STATE_DIR="$CICD_ROOT/state"
+ENV_FILE="$CONFIG_DIR/deploy.env"
 STATE_FILE="$STATE_DIR/release.env"
 LOCK_FILE="$STATE_DIR/deploy.lock"
-COMPOSE=(docker compose --env-file "$ENV_FILE")
+COMPOSE_FILE="$CONFIG_DIR/candidate.yml"
+CANDIDATE_CONTAINER=synapse-candidate
+PREFLIGHT_CONTAINER=synapse-candidate-preflight
 
-log() { printf '[synapse] %s\n' "$*"; }
-die() { printf '[synapse] ERROR: %s\n' "$*" >&2; exit 1; }
-
+log() { printf '[synapse-cicd] %s\n' "$*"; }
+die() { printf '[synapse-cicd] ERROR: %s\n' "$*" >&2; exit 1; }
 require_root() { [[ ${EUID:-$(id -u)} -eq 0 ]] || die 'run as root'; }
-require_tools() { command -v docker >/dev/null || die 'docker is required'; command -v curl >/dev/null || die 'curl is required'; command -v flock >/dev/null || die 'flock is required'; }
+require_tools() {
+  local tool
+  for tool in curl docker flock git realpath tar; do
+    command -v "$tool" >/dev/null || die "$tool is required"
+  done
+  docker compose version >/dev/null || die 'Docker Compose plugin is required'
+}
 validate_sha() { [[ "$1" =~ ^[0-9a-f]{40}$ ]] || die "invalid commit SHA: $1"; }
+
+env_get() {
+  local key=$1
+  [[ -f "$ENV_FILE" ]] || die "missing $ENV_FILE"
+  awk -F= -v key="$key" '$1 == key { sub(/^[^=]*=/, ""); print; exit }' "$ENV_FILE"
+}
+required_env() {
+  local key=$1 value
+  value=$(env_get "$key")
+  [[ -n "$value" ]] || die "$key is required in $ENV_FILE"
+  printf '%s' "$value"
+}
+
+validate_production_checkout() {
+  local workspace=$1 expected_slug remote head production
+  expected_slug=$(required_env EXPECTED_REPOSITORY_SLUG)
+  remote=$(git -C "$workspace" remote get-url origin)
+  [[ "$remote" == "https://github.com/$expected_slug.git" || "$remote" == "git@github.com:$expected_slug.git" ]] \
+    || die "unexpected repository remote: $remote"
+  head=$(git -C "$workspace" rev-parse HEAD)
+  production=$(git -C "$workspace" rev-parse refs/remotes/origin/production)
+  [[ "$head" == "$production" ]] || die 'checkout does not exactly match origin/production'
+  git -C "$workspace" diff --quiet || die 'checkout has modified tracked files'
+  git -C "$workspace" diff --cached --quiet || die 'checkout has staged changes'
+}
 
 state_get() {
   local key=$1 default=${2:-}
   [[ -f "$STATE_FILE" ]] || { printf '%s' "$default"; return; }
   awk -F= -v key="$key" '$1 == key { print substr($0, index($0,"=")+1); exit }' "$STATE_FILE"
 }
-
 write_state() {
-  local active_slot=$1 current_sha=$2 previous_slot=$3 previous_sha=$4 outcome=$5
-  mkdir -p "$STATE_DIR"
+  local current_sha=$1 previous_sha=$2 outcome=$3
   local tmp
+  mkdir -p "$STATE_DIR"
   tmp=$(mktemp "$STATE_DIR/release.XXXXXX")
   cat >"$tmp" <<EOF
-ACTIVE_SLOT=$active_slot
 CURRENT_SHA=$current_sha
-PREVIOUS_SLOT=$previous_slot
 PREVIOUS_SHA=$previous_sha
 LAST_OUTCOME=$outcome
 UPDATED_AT=$(date -u +%Y-%m-%dT%H:%M:%SZ)
@@ -41,57 +69,85 @@ EOF
   mv -f "$tmp" "$STATE_FILE"
 }
 
-env_get() {
-  local key=$1
-  [[ -f "$ENV_FILE" ]] || die "missing $ENV_FILE"
-  awk -F= -v key="$key" '$1 == key { sub(/^[^=]*=/, ""); print; exit }' "$ENV_FILE"
+image_name() { printf 'synapse-candidate:%s' "$1"; }
+candidate_env() { required_env CANDIDATE_ENV_FILE; }
+candidate_config() { required_env CANDIDATE_CONFIG_FILE; }
+
+validate_candidate_files() {
+  local candidate_env_file candidate_config_file
+  candidate_env_file=$(candidate_env)
+  candidate_config_file=$(candidate_config)
+  [[ -f "$candidate_env_file" ]] || die "missing candidate environment: $candidate_env_file"
+  [[ -f "$candidate_config_file" ]] || die "missing candidate configuration: $candidate_config_file"
+  [[ $(stat -c '%a' "$candidate_env_file") == 600 ]] || die 'candidate .env must have mode 600'
 }
 
-slot_port() { [[ "$1" == blue ]] && printf '3081' || printf '3082'; }
-slot_project() { printf 'synapse-app-%s' "$1"; }
-
-render_slot_compose() {
-  local image=$1 slot=$2 port=$3 output=$4
-  sed -e "s|__APP_IMAGE__|$image|g" -e "s|__APP_SLOT__|$slot|g" -e "s|__APP_PORT__|$port|g" \
-    "$CONFIG_DIR/slot.yml" >"$output"
+start_candidate_services() {
+  docker compose -f "$COMPOSE_FILE" -p synapse-candidate-services up -d --wait --wait-timeout 120
 }
 
-render_caddy() {
-  local upstream=$1 output=$CONFIG_DIR/Caddyfile
-  local app_domain admin_domain caddy_email
-  app_domain=$(env_get APP_DOMAIN)
-  admin_domain=$(env_get ADMIN_DOMAIN)
-  caddy_email=$(env_get CADDY_EMAIL || true)
-  caddy_email=${caddy_email:-admin@$app_domain}
-  [[ "$app_domain" =~ ^[A-Za-z0-9.-]+$ ]] || die 'APP_DOMAIN contains invalid characters'
-  [[ "$admin_domain" =~ ^[A-Za-z0-9.-]+$ ]] || die 'ADMIN_DOMAIN contains invalid characters'
-  [[ "$upstream" =~ ^[A-Za-z0-9_.:-]+$ ]] || die 'invalid Caddy upstream'
-  sed -e "s|__APP_DOMAIN__|$app_domain|g" -e "s|__ADMIN_DOMAIN__|$admin_domain|g" \
-    -e "s|__ACTIVE_UPSTREAM__|$upstream|g" -e "s|__CADDY_EMAIL__|$caddy_email|g" \
-    "$CONFIG_DIR/Caddyfile.tmpl" >"$output"
+remove_container() {
+  docker rm -f "$1" >/dev/null 2>&1 || true
 }
 
-reload_caddy() {
-  docker exec synapse-caddy caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile >/dev/null || die 'Caddy configuration validation failed'
-  docker exec synapse-caddy caddy reload --config /etc/caddy/Caddyfile --adapter caddyfile >/dev/null || die 'Caddy reload failed'
+run_candidate() {
+  local name=$1 image=$2 port=$3 restart_policy=$4
+  local env_file config_file
+  env_file=$(candidate_env)
+  config_file=$(candidate_config)
+  remove_container "$name"
+  docker run -d \
+    --name "$name" \
+    --restart "$restart_policy" \
+    --network synapse-candidate \
+    -p "127.0.0.1:$port:3080" \
+    --env-file "$env_file" \
+    -e HOST=0.0.0.0 \
+    -e PORT=3080 \
+    -e NODE_ENV=production \
+    -e MONGO_URI=mongodb://candidate-mongodb:27017/SynapseCandidate \
+    -e USE_REDIS=true \
+    -e USE_REDIS_STREAMS=true \
+    -e REDIS_URI=redis://candidate-redis:6379 \
+    -e REDIS_KEY_PREFIX=synapse-candidate \
+    -e LIBRECHAT_LOG_DIR=/app/api/logs \
+    -e SEARCH=false \
+    -v "$env_file:/app/.env:ro" \
+    -v "$config_file:/app/librechat.yaml:ro" \
+    -v "$CANDIDATE_DIR/uploads:/app/uploads" \
+    -v "$CANDIDATE_DIR/logs:/app/api/logs" \
+    -v "$CANDIDATE_DIR/images:/app/client/public/images" \
+    -v "$CANDIDATE_DIR/data:/app/data" \
+    "$image" >/dev/null
 }
 
 wait_ready() {
-  local container=$1 port=$2
-  local i status
-  for i in $(seq 1 90); do
-    status=$(docker inspect -f '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' "$container" 2>/dev/null || true)
-    if [[ "$status" == healthy ]] && curl -fsS --max-time 3 "http://127.0.0.1:$port/readyz" >/dev/null; then return 0; fi
-    [[ "$status" == exited || "$status" == dead ]] && break
+  local container=$1 port=$2 attempts
+  attempts=$(required_env READY_ATTEMPTS)
+  [[ "$attempts" =~ ^[1-9][0-9]*$ ]] || die 'READY_ATTEMPTS must be a positive integer'
+  for ((i = 1; i <= attempts; i++)); do
+    [[ $(docker inspect -f '{{.State.Running}}' "$container" 2>/dev/null || true) == true ]] || break
+    curl -fsS --max-time 5 "http://127.0.0.1:$port/readyz" >/dev/null && return 0
     sleep 2
   done
-  docker logs --tail 120 "$container" >&2 || true
+  docker logs --tail 150 "$container" >&2 || true
   return 1
 }
 
-public_smoke() {
-  local domain
-  domain=$(env_get APP_DOMAIN)
-  [[ ${SKIP_PUBLIC_SMOKE:-false} == true ]] && return 0
-  curl -fsS --retry 3 --retry-delay 2 --max-time 20 "https://$domain/readyz" >/dev/null
+run_candidate_migration() {
+  local image=$1 env_file config_file
+  shift
+  env_file=$(candidate_env)
+  config_file=$(candidate_config)
+  docker run --rm \
+    --network synapse-candidate \
+    --env-file "$env_file" \
+    -e MONGO_URI=mongodb://candidate-mongodb:27017/SynapseCandidate \
+    -e USE_REDIS=true \
+    -e REDIS_URI=redis://candidate-redis:6379 \
+    -e REDIS_KEY_PREFIX=synapse-candidate \
+    -v "$env_file:/app/.env:ro" \
+    -v "$config_file:/app/librechat.yaml:ro" \
+    --workdir /app \
+    "$image" node config/migrate-usage-policies.js "$@"
 }

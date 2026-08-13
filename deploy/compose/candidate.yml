@@ -1,0 +1,44 @@
+name: synapse-candidate-services
+
+services:
+  mongodb:
+    image: mongo:8.0.20
+    container_name: synapse-candidate-mongodb
+    restart: unless-stopped
+    command: mongod --noauth
+    healthcheck:
+      test: ['CMD', 'mongosh', '--quiet', '--eval', 'db.runCommand({ ping: 1 }).ok']
+      interval: 5s
+      timeout: 5s
+      retries: 24
+    volumes:
+      - candidate-mongodb:/data/db
+    networks:
+      candidate:
+        aliases: [candidate-mongodb]
+
+  redis:
+    image: redis:7.4-alpine
+    container_name: synapse-candidate-redis
+    restart: unless-stopped
+    command: redis-server --appendonly yes
+    healthcheck:
+      test: ['CMD', 'redis-cli', 'ping']
+      interval: 5s
+      timeout: 3s
+      retries: 24
+    volumes:
+      - candidate-redis:/data
+    networks:
+      candidate:
+        aliases: [candidate-redis]
+
+networks:
+  candidate:
+    name: synapse-candidate
+
+volumes:
+  candidate-mongodb:
+    name: synapse-candidate-mongodb
+  candidate-redis:
+    name: synapse-candidate-redis

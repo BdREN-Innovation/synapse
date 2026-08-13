@@ -30,11 +30,7 @@ const {
   supportsBalanceCheck,
   isBedrockDocumentType,
   getEndpointFileConfig,
-  extractFollowUpPrompts,
-  FOLLOW_UP_PROMPTS_ENV,
-  FOLLOW_UP_PROMPT_INSTRUCTION,
 } = require('librechat-data-provider');
-const { isEnabled } = require('@librechat/api');
 const { getStrategyFunctions } = require('~/server/services/Files/strategies');
 const { logViolation } = require('~/cache');
 const TextStream = require('./TextStream');
@@ -86,64 +82,6 @@ const buildOwnerFileFilter = (fileIds, user) => {
     filter.tenantId = user.tenantId;
   }
   return filter;
-};
-
-const appendFollowUpInstruction = (payload) => {
-  if (!Array.isArray(payload) || payload.length === 0) {
-    return payload;
-  }
-
-  const messages = [...payload];
-  const latest = messages[messages.length - 1];
-  if (!latest || latest.role !== 'user') {
-    return payload;
-  }
-
-  if (typeof latest.content === 'string') {
-    messages[messages.length - 1] = {
-      ...latest,
-      content: `${latest.content}\n\n${FOLLOW_UP_PROMPT_INSTRUCTION}`,
-    };
-    return messages;
-  }
-
-  if (Array.isArray(latest.content)) {
-    const content = [...latest.content];
-    const textPart = content.find((part) => part?.type === 'text' && typeof part.text === 'string');
-    if (textPart) {
-      textPart.text = `${textPart.text}\n\n${FOLLOW_UP_PROMPT_INSTRUCTION}`;
-      messages[messages.length - 1] = { ...latest, content };
-      return messages;
-    }
-  }
-
-  return payload;
-};
-
-const extractFollowUpsFromCompletion = (completion) => {
-  if (typeof completion === 'string') {
-    return extractFollowUpPrompts(completion);
-  }
-
-  if (!Array.isArray(completion)) {
-    return { completion };
-  }
-
-  const parts = completion.map((part) => {
-    if (part?.type !== 'text' || typeof part.text !== 'string') {
-      return part;
-    }
-    const parsed = extractFollowUpPrompts(part.text);
-    return parsed.text === part.text ? part : { ...part, text: parsed.text };
-  });
-  const textPart = completion.find(
-    (part) => part?.type === 'text' && typeof part.text === 'string',
-  );
-  const parsed = textPart ? extractFollowUpPrompts(textPart.text) : { text: '' };
-  return {
-    completion: parts,
-    followUpPrompts: parsed.followUpPrompts,
-  };
 };
 
 const TOOL_ATTACHMENT_KEYS = [
@@ -678,11 +616,6 @@ class BaseClient {
     );
     this.options.startupTelemetry?.mark('messages_built');
 
-    const followUpsEnabled = isEnabled(process.env[FOLLOW_UP_PROMPTS_ENV]);
-    if (followUpsEnabled) {
-      payload = appendFollowUpInstruction(payload);
-    }
-
     if (tokenCountMap && tokenCountMap[userMessage.messageId]) {
       userMessage.tokenCount = tokenCountMap[userMessage.messageId];
       logger.debug('[BaseClient] userMessage', {
@@ -778,8 +711,6 @@ class BaseClient {
     }
 
     let { completion, metadata } = await this.sendCompletion(payload, opts);
-    const parsedCompletion = extractFollowUpsFromCompletion(completion);
-    completion = parsedCompletion.completion ?? parsedCompletion.text;
     if (this.abortController) {
       this.abortController.requestCompleted = true;
     }
@@ -811,9 +742,6 @@ class BaseClient {
       endpoint: this.options.endpoint,
       ...(this.metadata ?? {}),
       metadata: Object.keys(metadata ?? {}).length > 0 ? metadata : undefined,
-      ...(followUpsEnabled && parsedCompletion.followUpPrompts
-        ? { followUpPrompts: parsedCompletion.followUpPrompts }
-        : {}),
     };
 
     if (typeof completion === 'string') {
