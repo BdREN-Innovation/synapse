@@ -1512,6 +1512,9 @@ export type TStartupConfig = {
     username?: boolean;
   };
   serverDomain: string;
+  /** Path of the admin console when it is hosted alongside this app, e.g.
+   *  `/adminpanel`. Unset when the console is not publicly reachable. */
+  adminPanelPath?: string;
   emailLoginEnabled: boolean;
   registrationEnabled: boolean;
   socialLoginEnabled: boolean;

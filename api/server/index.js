@@ -49,6 +49,10 @@ const initializeMCPs = require('./services/initializeMCPs');
 const configureSocialLogins = require('./socialLogins');
 const createSpaFallback = require('./utils/fallback');
 const { getAppConfig } = require('./services/Config');
+const {
+  assertEnforcementTopology,
+  reconcileQuotaState,
+} = require('./services/usageQuota');
 const staticCache = require('./utils/staticCache');
 const noIndex = require('./middleware/noIndex');
 const routes = require('./routes');
@@ -112,6 +116,19 @@ const startServer = async () => {
   await connectDb();
 
   logger.info('Connected to MongoDB');
+  const quotaTopology = await assertEnforcementTopology();
+  logger.info(
+    `[usageQuota] mode=${quotaTopology.enforcing ? 'enforce' : 'shadow'} transactionCapable=${quotaTopology.transactionCapable}`,
+  );
+  const quotaReconcilerInterval = setInterval(
+    () => {
+      reconcileQuotaState().catch((err) => {
+        logger.error('[usageQuota] Reservation reconciliation failed:', err);
+      });
+    },
+    Math.max(Number(process.env.QUOTA_RECONCILE_INTERVAL_MS) || 60_000, 10_000),
+  );
+  quotaReconcilerInterval.unref();
   indexSync().catch((err) => {
     logger.error('[indexSync] Background sync failed:', err);
   });
@@ -267,8 +284,11 @@ const startServer = async () => {
   app.use('/api/admin/groups', routes.adminGroups);
   app.use('/api/admin/roles', routes.adminRoles);
   app.use('/api/admin/skills', routes.adminSkills);
+  app.use('/api/admin/usage', routes.adminUsage);
   app.use('/api/admin/users', routes.adminUsers);
   app.use('/api/admin/audit-log', routes.adminAuditLog);
+  app.use('/api/platform/institutions', routes.platformInstitutions);
+  app.use('/api/platform/users', routes.platformUsers);
   app.use('/api/actions', routes.actions);
   app.use('/api/keys', routes.keys);
   app.use('/api/api-keys', routes.apiKeys);

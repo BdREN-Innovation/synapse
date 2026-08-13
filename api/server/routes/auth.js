@@ -1,5 +1,10 @@
 const express = require('express');
+const { logger } = require('@librechat/data-schemas');
 const { createSetBalanceConfig, forceRefreshCloudFrontAuthCookies } = require('@librechat/api');
+const {
+  InstitutionInviteStatuses,
+  resolveInstitutionInviteByToken,
+} = require('~/server/services/institutionMembers');
 const {
   resetPasswordRequestController,
   resetPasswordController,
@@ -63,6 +68,19 @@ router.post('/cloudfront/refresh', middleware.requireJwtAuth, (req, res) => {
     refreshAfterSec: result.refreshAfterSec,
   });
 });
+router.get('/invite/:token', middleware.registerLimiter, async (req, res) => {
+  try {
+    const invite = await resolveInstitutionInviteByToken(req.params.token);
+    if (!invite || invite.status !== InstitutionInviteStatuses.PENDING) {
+      return res.status(404).json({ message: 'Invitation not found, already used, or expired' });
+    }
+    return res.status(200).json({ email: invite.email, name: invite.name });
+  } catch (error) {
+    logger.error('[GET /auth/invite/:token] Failed to resolve invitation', error);
+    return res.status(500).json({ message: 'Failed to resolve invitation' });
+  }
+});
+
 router.post(
   '/register',
   middleware.registerLimiter,

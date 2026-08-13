@@ -26,6 +26,7 @@ interface CapabilityDeps {
     capability: SystemCapability;
     tenantId?: string;
   }) => Promise<boolean>;
+  isPlatformSuperadmin?: (user: CapabilityUser) => Promise<boolean>;
 }
 
 export interface CapabilityUser {
@@ -128,7 +129,7 @@ export function generateCapabilityCheck(deps: CapabilityDeps): {
   requireCapability: RequireCapabilityFn;
   hasConfigCapability: HasConfigCapabilityFn;
 } {
-  const { getUserPrincipals, hasCapabilityForPrincipals } = deps;
+  const { getUserPrincipals, hasCapabilityForPrincipals, isPlatformSuperadmin } = deps;
 
   let workerWarned = false;
 
@@ -151,6 +152,11 @@ export function generateCapabilityCheck(deps: CapabilityDeps): {
     const cached = store?.results.get(resultKey);
     if (cached !== undefined) {
       return cached;
+    }
+
+    if (isPlatformSuperadmin && (await isPlatformSuperadmin(user))) {
+      store?.results.set(resultKey, true);
+      return true;
     }
 
     const principalKey = `${user.id}:${user.role}:${user.tenantId ?? ''}`;

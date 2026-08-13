@@ -111,16 +111,19 @@ const createErrorHandler = ({ req, res, getContext, originPath = '/assistants/ch
 
     await new Promise((resolve) => setTimeout(resolve, 2000));
 
-    let run;
-    try {
-      await recordUsage({
-        ...run.usage,
-        model: run.model,
-        user: req.user.id,
-        conversationId,
-      });
-    } catch (error) {
-      logger.error(`[${originPath}] Error fetching or processing run`, error);
+    if (completedRun?.usage) {
+      try {
+        await recordUsage({
+          ...completedRun.usage,
+          model: completedRun.model,
+          user: req.user.id,
+          conversationId,
+          runId: completedRun.id ?? run_id,
+          context: 'error',
+        });
+      } catch (error) {
+        logger.error(`[${originPath}] Error recording run usage`, error);
+      }
     }
 
     let finalEvent;

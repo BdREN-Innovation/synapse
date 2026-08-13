@@ -1,4 +1,4 @@
-import { logger } from '@librechat/data-schemas';
+import { inferProviderKey } from '@librechat/data-schemas';
 import {
   inputTokensIncludesCache,
   reconcileContextUsage,
@@ -21,6 +21,7 @@ import type {
 } from './transactions';
 import type { UsageMetadata } from '~/stream/interfaces/IJobStore';
 import type { EndpointTokenConfig } from '~/types/tokens';
+import { matchModelName } from '~/utils/tokens';
 import {
   prepareStructuredTokenSpend,
   bulkWriteTransactions,
@@ -118,6 +119,31 @@ function splitUsage(usage: UsageMetadata): SplitUsage {
     totalInput: rawInput + cacheCreation + cacheRead,
     completion,
   };
+}
+
+/** Exact token totals used to settle a quota reservation. Unlike the response
+ * context counter, this includes every primary, summarization, sequential, and
+ * subagent model call exactly once. */
+export function aggregateBillableUsage(usages: ReadonlyArray<UsageMetadata> | undefined): {
+  inputTokens: number;
+  cacheWriteTokens: number;
+  cacheReadTokens: number;
+  outputTokens: number;
+} {
+  return (usages ?? []).reduce(
+    (total, usage) => {
+      if (!usage) {
+        return total;
+      }
+      const split = splitUsage(usage);
+      total.inputTokens += split.inputOnly;
+      total.cacheWriteTokens += split.cacheCreation;
+      total.cacheReadTokens += split.cacheRead;
+      total.outputTokens += split.completion;
+      return total;
+    },
+    { inputTokens: 0, cacheWriteTokens: 0, cacheReadTokens: 0, outputTokens: 0 },
+  );
 }
 
 export interface RecordUsageDeps {
@@ -479,6 +505,7 @@ export function resolveAgentTokenConfig({
 
 export interface RecordUsageParams {
   user: string;
+  tenantId?: string;
   conversationId: string;
   collectedUsage: UsageMetadata[];
   model?: string;
@@ -516,6 +543,7 @@ export async function recordCollectedUsage(
 ): Promise<RecordUsageResult | undefined> {
   const {
     user,
+    tenantId,
     model,
     balance,
     messageId,
@@ -559,6 +587,7 @@ export async function recordCollectedUsage(
 
   const { pricing, bulkWriteOps } = deps;
   const useBulk = pricing && bulkWriteOps;
+  const spendPromises: Promise<unknown>[] = [];
 
   const processUsageGroup = (
     usages: UsageMetadata[],
@@ -566,7 +595,8 @@ export async function recordCollectedUsage(
     docs: PreparedEntry[],
     options?: { excludeFromOutputTotal?: boolean },
   ): void => {
-    for (const usage of usages) {
+    for (let index = 0; index < usages.length; index += 1) {
+      const usage = usages[index];
       if (!usage) {
         continue;
       }
@@ -577,8 +607,14 @@ export async function recordCollectedUsage(
         total_output_tokens += completion;
       }
 
+      /** Secondary calls (title, tool loops) collect usage without a provider;
+       *  tenant-attributed writes require one, so derive it from the model. */
+      const resolvedProviderKey = inferProviderKey(usage.model ?? model, usage.provider);
+
       const txMetadata: TxMetadata = {
         user,
+        tenantId,
+        requireTenant: Boolean(tenantId),
         balance,
         messageId,
         transactions,
@@ -590,7 +626,33 @@ export async function recordCollectedUsage(
           ? resolveEndpointTokenConfig(usage)
           : endpointTokenConfig,
         context: usageContext,
+        usageKind: usageContext,
+        usageUnit: 'tokens',
         model: usage.model ?? model,
+        modelKey:
+          matchModelName(usage.model ?? model ?? '') ??
+          String(usage.model ?? model ?? '')
+            .replace(
+              new RegExp(
+                `^${String(usage.provider ?? '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}/`,
+                'i',
+              ),
+              '',
+            )
+            .toLowerCase(),
+        providerKey: resolvedProviderKey,
+        providerModelId: usage.model ?? model,
+        requestKey: [
+          conversationId,
+          messageId,
+          usage.runId,
+          usageContext,
+          resolvedProviderKey,
+          usage.model ?? model,
+          usage.seq ?? index,
+        ]
+          .filter(Boolean)
+          .join(':'),
       };
 
       if (useBulk) {
@@ -621,35 +683,25 @@ export async function recordCollectedUsage(
       }
 
       if (cacheCreation > 0 || cacheRead > 0) {
-        deps
-          .spendStructuredTokens(txMetadata, {
+        spendPromises.push(
+          deps.spendStructuredTokens(txMetadata, {
             promptTokens: {
               input: inputOnly,
               write: cacheCreation,
               read: cacheRead,
             },
             completionTokens: completion,
-          })
-          .catch((err) => {
-            logger.error(
-              `[packages/api #recordCollectedUsage] Error spending structured ${usageContext} tokens`,
-              err,
-            );
-          });
+          }),
+        );
         continue;
       }
 
-      deps
-        .spendTokens(txMetadata, {
+      spendPromises.push(
+        deps.spendTokens(txMetadata, {
           promptTokens: inputOnly,
           completionTokens: completion,
-        })
-        .catch((err) => {
-          logger.error(
-            `[packages/api #recordCollectedUsage] Error spending ${usageContext} tokens`,
-            err,
-          );
-        });
+        }),
+      );
     }
   };
 
@@ -665,12 +717,9 @@ export async function recordCollectedUsage(
    */
   processUsageGroup(subagentUsages, 'subagent', allDocs, { excludeFromOutputTotal: true });
   processUsageGroup(sequentialUsages, 'sequential', allDocs, { excludeFromOutputTotal: true });
+  await Promise.all(spendPromises);
   if (useBulk && allDocs.length > 0) {
-    try {
-      await bulkWriteTransactions({ user, docs: allDocs }, bulkWriteOps);
-    } catch (err) {
-      logger.error('[packages/api #recordCollectedUsage] Error in bulk write', err);
-    }
+    await bulkWriteTransactions({ user, docs: allDocs }, bulkWriteOps);
   }
 
   return {

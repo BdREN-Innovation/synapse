@@ -24,6 +24,7 @@ const {
   sendEvent,
   computeUsageCostUSD,
   aggregateEmittedUsage,
+  aggregateBillableUsage,
   resolveAgentTokenConfig,
   buildPersistedContextUsage,
   computeSummaryUsedTokens,
@@ -1062,6 +1063,8 @@ class AgentClient extends BaseClient {
       },
       {
         user: this.user ?? this.options.req.user?.id,
+        tenantId: this.options.req.user?.tenantId,
+        requireTenant: Boolean(this.options.req.user?.tenantId),
         conversationId: this.conversationId,
         collectedUsage,
         model: model ?? this.model ?? this.options.agent.model_parameters.model,
@@ -1085,6 +1088,10 @@ class AgentClient extends BaseClient {
    */
   getStreamUsage() {
     return this.usage;
+  }
+
+  getQuotaUsage() {
+    return aggregateBillableUsage(this.collectedUsage);
   }
 
   /**
@@ -2298,11 +2305,6 @@ class AgentClient extends BaseClient {
         balance: balanceConfig,
         transactions: transactionsConfig,
         messageId: this.responseMessageId,
-      }).catch((err) => {
-        logger.error(
-          '[api/server/controllers/agents/client.js #titleConvo] Error recording collected usage',
-          err,
-        );
       });
 
       return sanitizeTitle(titleResult.title);
@@ -2330,43 +2332,43 @@ class AgentClient extends BaseClient {
     completionTokens,
     context = 'message',
   }) {
-    try {
+    await db.spendTokens(
+      {
+        model,
+        providerKey: this.options.endpointType ?? this.options.endpoint,
+        context,
+        balance,
+        tenantId: this.options.req.user?.tenantId,
+        requestKey: `${this.conversationId}:${this.responseMessageId}:${context}`,
+        messageId: this.responseMessageId,
+        conversationId: this.conversationId,
+        user: this.user ?? this.options.req.user?.id,
+        endpointTokenConfig: this.options.endpointTokenConfig,
+      },
+      { promptTokens, completionTokens },
+    );
+
+    if (
+      usage &&
+      typeof usage === 'object' &&
+      'reasoning_tokens' in usage &&
+      typeof usage.reasoning_tokens === 'number'
+    ) {
       await db.spendTokens(
         {
           model,
-          context,
+          providerKey: this.options.endpointType ?? this.options.endpoint,
           balance,
+          context: 'reasoning',
+          tenantId: this.options.req.user?.tenantId,
+          requireTenant: Boolean(this.options.req.user?.tenantId),
+          requestKey: `${this.conversationId}:${this.responseMessageId}:reasoning`,
           messageId: this.responseMessageId,
           conversationId: this.conversationId,
           user: this.user ?? this.options.req.user?.id,
           endpointTokenConfig: this.options.endpointTokenConfig,
         },
-        { promptTokens, completionTokens },
-      );
-
-      if (
-        usage &&
-        typeof usage === 'object' &&
-        'reasoning_tokens' in usage &&
-        typeof usage.reasoning_tokens === 'number'
-      ) {
-        await db.spendTokens(
-          {
-            model,
-            balance,
-            context: 'reasoning',
-            messageId: this.responseMessageId,
-            conversationId: this.conversationId,
-            user: this.user ?? this.options.req.user?.id,
-            endpointTokenConfig: this.options.endpointTokenConfig,
-          },
-          { completionTokens: usage.reasoning_tokens },
-        );
-      }
-    } catch (error) {
-      logger.error(
-        '[api/server/controllers/agents/client.js #recordTokenUsage] Error recording token usage',
-        error,
+        { completionTokens: usage.reasoning_tokens },
       );
     }
   }

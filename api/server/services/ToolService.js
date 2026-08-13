@@ -196,7 +196,11 @@ const processVisionRequest = async (client, currentAction) => {
       user: client.req.user.id,
       model: client.req.body.model,
       conversationId: (client.responseMessage ?? client.finalMessage).conversationId,
+      runId: currentAction.toolCallId,
+      context: 'vision',
       ...completion.usage,
+    }).catch((error) => {
+      logger.error('[ToolService] failed to record vision tool usage', error);
     });
   }
   const output = completion?.choices?.[0]?.message?.content ?? 'No image details found.';

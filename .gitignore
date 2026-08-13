@@ -72,7 +72,10 @@ bower_components/
 .flooignore
 
 #config file
-librechat.yaml
+# librechat.yaml is tracked in this fork. It is deployment configuration with
+# no literal secrets — provider keys are ${ENV} references — and tracking it is
+# what lets the server be updated from GitHub rather than edited in place.
+!librechat.yaml
 librechat.yml
 
 # Environment

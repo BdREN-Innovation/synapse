@@ -1,6 +1,7 @@
 import { getTenantId, getRequestId, logger } from '@librechat/data-schemas';
 import { preAuthTenantMiddleware } from './preAuthTenant';
 import type { Request, Response, NextFunction } from 'express';
+import { validateActiveInstitution } from './institution';
 
 jest.mock('@librechat/data-schemas', () => ({
   ...jest.requireActual('@librechat/data-schemas'),
@@ -12,14 +13,27 @@ jest.mock('@librechat/data-schemas', () => ({
   },
 }));
 
+jest.mock('./institution', () => ({
+  validateActiveInstitution: jest.fn(),
+}));
+
+const validateActiveInstitutionMock = jest.mocked(validateActiveInstitution);
+
 describe('preAuthTenantMiddleware', () => {
   let req: { headers: Record<string, string | string[] | undefined>; ip?: string; path?: string };
-  let res: Partial<Response>;
+  let res: Partial<Response> & { status: jest.Mock; json: jest.Mock };
 
   beforeEach(() => {
     jest.clearAllMocks();
     req = { headers: {} };
-    res = {};
+    res = {
+      status: jest.fn().mockReturnThis(),
+      json: jest.fn().mockReturnThis(),
+    };
+    validateActiveInstitutionMock.mockResolvedValue({
+      ok: true,
+      institution: { tenantId: 'acme-corp', status: 'active', name: 'Acme' },
+    });
   });
 
   it('calls next() without ALS context when no X-Tenant-Id header is present', () => {
@@ -43,7 +57,7 @@ describe('preAuthTenantMiddleware', () => {
     expect(capturedTenantId).toBeUndefined();
   });
 
-  it('wraps downstream in ALS context when X-Tenant-Id header is present', () => {
+  it('wraps downstream in ALS context when X-Tenant-Id header is present', async () => {
     req.headers = { 'x-tenant-id': 'acme-corp' };
     let capturedTenantId: string | undefined;
     const capturedNext: NextFunction = () => {
@@ -51,6 +65,7 @@ describe('preAuthTenantMiddleware', () => {
     };
 
     preAuthTenantMiddleware(req as Request, res as Response, capturedNext);
+    await Promise.resolve();
     expect(capturedTenantId).toBe('acme-corp');
   });
 
@@ -110,7 +125,7 @@ describe('preAuthTenantMiddleware', () => {
     );
   });
 
-  it('trims whitespace from tenant ID header', () => {
+  it('trims whitespace from tenant ID header', async () => {
     req.headers = { 'x-tenant-id': '  acme-corp  ' };
     let capturedTenantId: string | undefined;
     const capturedNext: NextFunction = () => {
@@ -118,7 +133,46 @@ describe('preAuthTenantMiddleware', () => {
     };
 
     preAuthTenantMiddleware(req as Request, res as Response, capturedNext);
+    await Promise.resolve();
     expect(capturedTenantId).toBe('acme-corp');
+  });
+
+  it('rejects unknown institutions with 404', async () => {
+    req.headers = { 'x-tenant-id': 'missing-tenant' };
+    req.path = '/api/config';
+    validateActiveInstitutionMock.mockResolvedValue({
+      ok: false,
+      reason: 'not_found',
+      statusCode: 404,
+      message: 'Institution not found',
+    });
+
+    const capturedNext = jest.fn();
+    preAuthTenantMiddleware(req as Request, res as Response, capturedNext);
+    await Promise.resolve();
+
+    expect(capturedNext).not.toHaveBeenCalled();
+    expect(res.status).toHaveBeenCalledWith(404);
+    expect(res.json).toHaveBeenCalledWith({ error: 'Institution not found' });
+  });
+
+  it('rejects suspended institutions with 403', async () => {
+    req.headers = { 'x-tenant-id': 'suspended-tenant' };
+    req.path = '/api/config';
+    validateActiveInstitutionMock.mockResolvedValue({
+      ok: false,
+      reason: 'inactive',
+      statusCode: 403,
+      message: 'Institution is not active',
+    });
+
+    const capturedNext = jest.fn();
+    preAuthTenantMiddleware(req as Request, res as Response, capturedNext);
+    await Promise.resolve();
+
+    expect(capturedNext).not.toHaveBeenCalled();
+    expect(res.status).toHaveBeenCalledWith(403);
+    expect(res.json).toHaveBeenCalledWith({ error: 'Institution is not active' });
   });
 
   it('ignores tenant IDs exceeding max length and logs warning', () => {

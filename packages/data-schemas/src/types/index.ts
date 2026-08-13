@@ -35,6 +35,15 @@ export * from './aclEntry';
 export * from './systemGrant';
 export * from './auditLog';
 export * from './group';
+export * from './institution';
+export * from './institutionImportJob';
+export * from './institutionInvite';
+export * from './platformAdmin';
+export * from './usagePolicy';
+export * from './usageBucket';
+export * from './usageReservation';
+export * from './usageWarning';
+export * from './adminScopeAssignment';
 /* Config */
 export * from './config';
 /* Admin */

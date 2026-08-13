@@ -8,6 +8,7 @@ import {
 } from '@librechat/data-schemas';
 import type { Response, NextFunction } from 'express';
 import type { ServerRequest } from '~/types/http';
+import { validateActiveInstitution } from '../institution';
 // Import directly from source file — _resetTenantMiddlewareStrictCache is intentionally
 // excluded from the public barrel export (index.ts).
 import {
@@ -21,7 +22,12 @@ jest.mock('fs/promises', () => ({
   unlink: jest.fn().mockResolvedValue(undefined),
 }));
 
+jest.mock('../institution', () => ({
+  validateActiveInstitution: jest.fn(),
+}));
+
 const unlinkMock = unlink as jest.MockedFunction<typeof unlink>;
+const validateActiveInstitutionMock = jest.mocked(validateActiveInstitution);
 
 function mockReq(user?: Record<string, unknown>): ServerRequest {
   return { headers: {}, user } as unknown as ServerRequest;
@@ -77,6 +83,13 @@ function runMiddlewareContext(
 }
 
 describe('tenantContextMiddleware', () => {
+  beforeEach(() => {
+    validateActiveInstitutionMock.mockResolvedValue({
+      ok: true,
+      institution: { tenantId: 'tenant-x', status: 'active', name: 'Tenant X' },
+    });
+  });
+
   afterEach(() => {
     _resetTenantMiddlewareStrictCache();
     delete process.env.TENANT_ISOLATION_STRICT;
@@ -168,6 +181,46 @@ describe('tenantContextMiddleware', () => {
     expect(tenantId).toBe('tenant-y');
   });
 
+  it('rejects authenticated requests for unknown institutions', async () => {
+    validateActiveInstitutionMock.mockResolvedValue({
+      ok: false,
+      reason: 'not_found',
+      statusCode: 404,
+      message: 'Institution not found',
+    });
+
+    const req = mockReq({ tenantId: 'tenant-missing', role: 'user' });
+    const res = mockRes();
+    const next: NextFunction = jest.fn();
+
+    tenantContextMiddleware(req, res, next);
+    await Promise.resolve();
+
+    expect(res.status).toHaveBeenCalledWith(403);
+    expect(res.json).toHaveBeenCalledWith({ error: 'Institution not found' });
+    expect(next).not.toHaveBeenCalled();
+  });
+
+  it('rejects authenticated requests for suspended institutions', async () => {
+    validateActiveInstitutionMock.mockResolvedValue({
+      ok: false,
+      reason: 'inactive',
+      statusCode: 403,
+      message: 'Institution is not active',
+    });
+
+    const req = mockReq({ tenantId: 'tenant-suspended', role: 'user' });
+    const res = mockRes();
+    const next: NextFunction = jest.fn();
+
+    tenantContextMiddleware(req, res, next);
+    await Promise.resolve();
+
+    expect(res.status).toHaveBeenCalledWith(403);
+    expect(res.json).toHaveBeenCalledWith({ error: 'Institution is not active' });
+    expect(next).not.toHaveBeenCalled();
+  });
+
   it('rejects a normalized system tenant sentinel for authenticated requests', async () => {
     const req = mockReq({ tenantId: ` ${SYSTEM_TENANT_ID} `, role: 'user' });
     const res = mockRes();
@@ -198,6 +251,13 @@ describe('tenantContextMiddleware', () => {
 });
 
 describe('restoreTenantContextFromReq', () => {
+  beforeEach(() => {
+    validateActiveInstitutionMock.mockResolvedValue({
+      ok: true,
+      institution: { tenantId: 'tenant-user', status: 'active', name: 'Tenant User' },
+    });
+  });
+
   afterEach(() => {
     _resetTenantMiddlewareStrictCache();
     delete process.env.TENANT_ISOLATION_STRICT;
@@ -386,6 +446,25 @@ describe('restoreTenantContextFromReq', () => {
     expect(res.json).toHaveBeenCalledWith({
       error: 'System tenant is not allowed for request-scoped routes',
     });
+    expect(next).not.toHaveBeenCalled();
+  });
+
+  it('rejects request-owned work for unknown institutions', async () => {
+    validateActiveInstitutionMock.mockResolvedValue({
+      ok: false,
+      reason: 'not_found',
+      statusCode: 404,
+      message: 'Institution not found',
+    });
+
+    const req = mockReq({ tenantId: 'tenant-missing', role: 'user' });
+    const res = mockRes();
+    const next: NextFunction = jest.fn();
+
+    await restoreTenantContextFromReq(req, res, next);
+
+    expect(res.status).toHaveBeenCalledWith(403);
+    expect(res.json).toHaveBeenCalledWith({ error: 'Institution not found' });
     expect(next).not.toHaveBeenCalled();
   });
 });

@@ -1,0 +1,18 @@
+<!doctype html>
+<html>
+  <body style="font-family: Arial, sans-serif; color: #222">
+    <h2>Token usage warning</h2>
+    <p>Hello {{name}},</p>
+    <p>
+      {{institutionName}} has reached {{threshold}}% of its configured {{scope}} token allowance
+      for <strong>{{scopeKey}}</strong>.
+    </p>
+    <ul>
+      <li>Used tokens: {{used}}</li>
+      <li>Reserved tokens: {{reserved}}</li>
+      <li>Limit: {{limit}}</li>
+      <li>Resets at: {{resetAt}}</li>
+    </ul>
+    <p>Please review the institution policy in the Synapse admin console.</p>
+  </body>
+</html>
