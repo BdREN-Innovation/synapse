@@ -149,7 +149,10 @@ export function buildLangfuseConfig({
   const langfuse: LangfuseRunConfigWithTraceAttributes = {
     deterministicTraceId: true,
   };
-  const metadata = mergeTraceMetadata(promptMetadata, normalizedTenantId);
+  // No prompt-level metadata is currently supplied by the run builder. Keep
+  // tenant metadata merging explicit instead of referencing an undefined
+  // promptMetadata variable, which would fail every request at runtime.
+  const metadata = mergeTraceMetadata(undefined, normalizedTenantId);
   const tags = mergeTags(undefined, normalizedTenantId);
   if (metadata) {
     langfuse.metadata = metadata;
