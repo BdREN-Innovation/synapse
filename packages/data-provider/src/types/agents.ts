@@ -1,6 +1,6 @@
 /* eslint-disable @typescript-eslint/no-namespace */
+import type { TTokenUsageEvent, TContextUsageEvent, TPendingSteer } from './runs';
 import type { FunctionToolCall, SummaryContentPart } from './assistants';
-import type { TTokenUsageEvent, TContextUsageEvent } from './runs';
 import type { TAttachment, TPlugin } from 'src/schemas';
 import { StepTypes, ContentTypes, ToolCallTypes } from './runs';
 
@@ -80,6 +80,8 @@ export namespace Agents {
     id?: string;
     /** If provided, the output of the tool call */
     output?: string;
+    /** The tool call was rejected before execution because its input failed schema validation. */
+    inputValidationError?: true;
     /** Auth URL */
     auth?: string;
     /** Expiration time */
@@ -257,6 +259,12 @@ export namespace Agents {
      * cross-replica client can rebuild and render the prompt from `resumeState`.
      */
     pendingAction?: PendingAction;
+    /**
+     * Steers queued server-side but not yet injected into the run. Injected
+     * steers already live inside `aggregatedContent`; these are the remainder,
+     * so a reconnecting client can rebuild its pending-steer chips.
+     */
+    pendingSteers?: TPendingSteer[];
   }
   /**
    * Represents a run step delta i.e. any changed fields on a run step during
@@ -277,6 +285,9 @@ export namespace Agents {
     type: StepTypes.MESSAGE_CREATION;
     message_creation: {
       message_id: string;
+      /** Provider content kind and Open Responses semantic text channel. */
+      content_type?: 'text' | 'think';
+      phase?: 'commentary' | 'final_answer';
     };
   };
   export type ToolCallsDetails = {
@@ -369,10 +380,32 @@ export namespace Agents {
     multiSelect?: boolean;
   }
 
+  /** One independently answerable question in a batched clarification. */
+  export interface AskUserQuestionBatchItem extends AskUserQuestionRequest {
+    /** Batch-unique identifier used to map the submitted answer. */
+    id: string;
+    /** Optional short heading rendered above the question. */
+    header?: string;
+  }
+
+  /** Input shape for one tool call that asks several related questions. */
+  export interface AskUserQuestionsRequest {
+    questions: AskUserQuestionBatchItem[];
+  }
+
   /** Interrupt payload for an ask-user-question pause. */
   export interface AskUserQuestionInterruptPayload {
     type: 'ask_user_question';
     question: AskUserQuestionRequest;
+    /** Present for a batched clarification; `question` remains the first-item fallback. */
+    questions?: AskUserQuestionBatchItem[];
+    /**
+     * The ask tool call that raised this interrupt (mirrors the SDK field,
+     * present from `@librechat/agents` > 3.3.8). Lets the question/answer
+     * stamps target the exact tool-call part instead of guessing by
+     * position when a model emits several ask calls in one turn.
+     */
+    tool_call_id?: string;
   }
 
   /**
@@ -458,6 +491,11 @@ export namespace Agents {
   /** Wire format for an ask-user-question response. */
   export interface AskUserQuestionResolution {
     answer: string;
+  }
+
+  /** Wire format for a batched ask-user-question response. */
+  export interface AskUserQuestionsResolution {
+    answers: Record<string, string>;
   }
 
   export interface ExtendedMessageContent {

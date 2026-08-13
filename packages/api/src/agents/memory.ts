@@ -6,10 +6,12 @@ import { Run, Providers, GraphEvents } from '@librechat/agents';
 import { HumanMessage } from '@librechat/agents/langchain/messages';
 import {
   Tools,
+  MemoryScope,
   Permissions,
   EModelEndpoint,
   PermissionTypes,
   AgentCapabilities,
+  stripAgentIdSuffix,
 } from 'librechat-data-provider';
 import type {
   OpenAIClientOptions,
@@ -117,6 +119,7 @@ type MemoryArtifactRecord = Record<Tools.memory, MemoryArtifact>;
  */
 export const createMemoryTool = ({
   userId,
+  agentId,
   setMemory,
   validKeys,
   charLimit,
@@ -125,6 +128,8 @@ export const createMemoryTool = ({
   onWrite,
 }: {
   userId: string | ObjectId;
+  /** Agent partition to write to; omit for the shared personal pool */
+  agentId?: string;
   setMemory: MemoryMethods['setMemory'];
   validKeys?: string[];
   charLimit?: number;
@@ -220,10 +225,11 @@ export const createMemoryTool = ({
               value,
               tokenCount,
               type: 'update',
+              ...(agentId ? { agentId } : {}),
             },
           };
 
-          const result = await setMemory({ userId, key, value, tokenCount });
+          const result = await setMemory({ userId, key, value, tokenCount, agentId });
           if (result.ok) {
             if (tokenLimit) {
               currentTotalTokens = newTotalTokens;
@@ -274,11 +280,14 @@ export const createMemoryTool = ({
  */
 export const createDeleteMemoryTool = ({
   userId,
+  agentId,
   deleteMemory,
   validKeys,
   onWrite,
 }: {
   userId: string | ObjectId;
+  /** Agent partition to delete from; omit for the shared personal pool */
+  agentId?: string;
   deleteMemory: MemoryMethods['deleteMemory'];
   validKeys?: string[];
   onWrite?: () => void;
@@ -299,10 +308,11 @@ export const createDeleteMemoryTool = ({
           [Tools.memory]: {
             key,
             type: 'delete',
+            ...(agentId ? { agentId } : {}),
           },
         };
 
-        const result = await deleteMemory({ userId, key });
+        const result = await deleteMemory({ userId, key, agentId });
         if (result.ok) {
           onWrite?.();
           logger.debug(`Memory deleted for key "${key}" for user "${userId}"`);
@@ -405,8 +415,9 @@ export function registerMemoryTools({
   toolRegistry?: LCToolRegistry;
   toolDefinitions?: LCTool[];
   validKeys?: string[];
-}): { toolDefinitions: LCTool[]; registered: string[] } {
+}): { toolDefinitions: LCTool[]; registered: string[]; toolNames: string[] } {
   const memoryToolDefinitions = getMemoryToolDefinitions(validKeys);
+  const toolNames = memoryToolDefinitions.map((def) => def.name);
   const inputDefinitions = toolDefinitions ?? [];
   const newDefs: LCTool[] = [];
   const registered: string[] = [];
@@ -423,9 +434,9 @@ export function registerMemoryTools({
   }
 
   if (newDefs.length === 0) {
-    return { toolDefinitions: inputDefinitions, registered };
+    return { toolDefinitions: inputDefinitions, registered, toolNames };
   }
-  return { toolDefinitions: [...inputDefinitions, ...newDefs], registered };
+  return { toolDefinitions: [...inputDefinitions, ...newDefs], registered, toolNames };
 }
 
 type GetRoleByName = (
@@ -433,7 +444,25 @@ type GetRoleByName = (
   fieldsToSelect?: string | string[],
 ) => Promise<IRole | null>;
 
-type InlineMemoryAgent = { tools?: unknown[]; memoryToolsRegistered?: boolean } | null | undefined;
+type InlineMemoryAgent =
+  | { id?: string; tools?: unknown[]; memoryToolsRegistered?: boolean; memory_scope?: MemoryScope }
+  | null
+  | undefined;
+
+/**
+ * Resolves the memory partition an agent reads/writes: its persisted id when
+ * the agent opted into isolated memory (`memory_scope: 'agent'`), otherwise
+ * `undefined` for the shared personal pool. Runtime ids carry a `____N`
+ * suffix in added-conversation paths, so the suffix is stripped to keep the
+ * partition stable across single- and multi-agent runs. Ephemeral agents
+ * never carry `memory_scope`, so they always resolve to the shared pool.
+ */
+export function getMemoryAgentId(agent: InlineMemoryAgent): string | undefined {
+  if (agent?.memory_scope === MemoryScope.agent && typeof agent.id === 'string' && agent.id) {
+    return stripAgentIdSuffix(agent.id);
+  }
+  return undefined;
+}
 
 /**
  * Whether an agent carries the inline memory tools. Prefers the LibreChat-only
@@ -463,35 +492,44 @@ export function agentHasInlineMemoryTools(agent: InlineMemoryAgent): boolean {
 /**
  * Request-scoped cache so that multiple memory-enabled agents in one run (and
  * the run's memory context load) share a single `getFormattedMemories` call
- * instead of each re-fetching the same user's memories.
+ * per partition instead of each re-fetching the same memories.
  */
-const requestMemoriesCache = new WeakMap<object, Promise<FormattedMemoriesResult>>();
+const requestMemoriesCache = new WeakMap<object, Map<string, Promise<FormattedMemoriesResult>>>();
 
 export function getRequestMemories({
   req,
   userId,
+  agentId,
   getFormattedMemories,
 }: {
   req: object;
   userId: string | ObjectId;
+  /** Agent partition; omit for the shared personal pool */
+  agentId?: string;
   getFormattedMemories: MemoryMethods['getFormattedMemories'];
 }): Promise<FormattedMemoriesResult> {
-  let cached = requestMemoriesCache.get(req);
+  let partitions = requestMemoriesCache.get(req);
+  if (!partitions) {
+    partitions = new Map();
+    requestMemoriesCache.set(req, partitions);
+  }
+  const partitionKey = agentId ?? '';
+  let cached = partitions.get(partitionKey);
   if (!cached) {
-    cached = getFormattedMemories({ userId });
-    requestMemoriesCache.set(req, cached);
+    cached = getFormattedMemories({ userId, agentId });
+    partitions.set(partitionKey, cached);
   }
   return cached;
 }
 
 /**
- * Drops the cached memories for a request so the next {@link getRequestMemories}
- * re-fetches. Inline `set_memory`/`delete_memory` writes call this on success so
- * a later tool round in the same response is seeded with the post-write usage
- * total instead of a stale pre-write one.
+ * Drops the cached memories for a request partition so the next
+ * {@link getRequestMemories} re-fetches. Inline `set_memory`/`delete_memory`
+ * writes call this on success so a later tool round in the same response is
+ * seeded with the post-write usage total instead of a stale pre-write one.
  */
-export function invalidateRequestMemories(req: object): void {
-  requestMemoriesCache.delete(req);
+export function invalidateRequestMemories(req: object, agentId?: string): void {
+  requestMemoriesCache.get(req)?.delete(agentId ?? '');
 }
 
 /**
@@ -563,6 +601,7 @@ export async function buildInlineMemoryTool({
 
   const memoryConfig = req?.config?.memory;
   const validKeys = memoryConfig?.validKeys as string[] | undefined;
+  const memoryAgentId = getMemoryAgentId(agent);
 
   if (toolName === DELETE_MEMORY_TOOL_NAME) {
     const allowed = await isMemoryToolAllowed({
@@ -575,9 +614,10 @@ export async function buildInlineMemoryTool({
     }
     return createDeleteMemoryTool({
       userId,
+      agentId: memoryAgentId,
       deleteMemory: memoryMethods.deleteMemory,
       validKeys,
-      onWrite: () => invalidateRequestMemories(req),
+      onWrite: () => invalidateRequestMemories(req, memoryAgentId),
     });
   }
 
@@ -598,6 +638,7 @@ export async function buildInlineMemoryTool({
       const formatted = await getRequestMemories({
         req,
         userId,
+        agentId: memoryAgentId,
         getFormattedMemories: memoryMethods.getFormattedMemories,
       });
       totalTokens = formatted?.totalTokens ?? 0;
@@ -611,12 +652,13 @@ export async function buildInlineMemoryTool({
 
   return createMemoryTool({
     userId,
+    agentId: memoryAgentId,
     setMemory: memoryMethods.setMemory,
     validKeys,
     charLimit,
     tokenLimit,
     totalTokens,
-    onWrite: () => invalidateRequestMemories(req),
+    onWrite: () => invalidateRequestMemories(req, memoryAgentId),
   });
 }
 
@@ -647,6 +689,7 @@ export class BasicToolEndHandler implements EventHandler {
 export async function processMemory({
   res,
   userId,
+  agentId,
   setMemory,
   deleteMemory,
   messages,
@@ -659,12 +702,15 @@ export async function processMemory({
   tokenLimit,
   totalTokens = 0,
   streamId = null,
+  jobCreatedAt,
   user,
 }: {
   res: ServerResponse;
   setMemory: MemoryMethods['setMemory'];
   deleteMemory: MemoryMethods['deleteMemory'];
   userId: string | ObjectId;
+  /** Agent partition; omit for the shared personal pool */
+  agentId?: string;
   memory: string;
   messageId: string;
   conversationId: string;
@@ -675,11 +721,13 @@ export async function processMemory({
   totalTokens?: number;
   llmConfig?: Partial<LLMConfig>;
   streamId?: string | null;
+  jobCreatedAt?: number;
   user?: IUser;
 }): Promise<(TAttachment | null)[] | undefined> {
   try {
     const memoryTool = createMemoryTool({
       userId,
+      agentId,
       tokenLimit,
       setMemory,
       validKeys,
@@ -687,6 +735,7 @@ export async function processMemory({
     });
     const deleteMemoryTool = createDeleteMemoryTool({
       userId,
+      agentId,
       validKeys,
       deleteMemory,
     });
@@ -780,7 +829,12 @@ ${memory ?? 'No existing memories'}`;
     });
 
     const artifactPromises: Promise<TAttachment | null>[] = [];
-    const memoryCallback = createMemoryCallback({ res, artifactPromises, streamId });
+    const memoryCallback = createMemoryCallback({
+      res,
+      artifactPromises,
+      streamId,
+      jobCreatedAt,
+    });
     const customHandlers = {
       [GraphEvents.TOOL_END]: new BasicToolEndHandler(memoryCallback),
     };
@@ -874,20 +928,25 @@ ${memory ?? 'No existing memories'}`;
 export async function createMemoryProcessor({
   res,
   userId,
+  agentId,
   messageId,
   memoryMethods,
   conversationId,
   config = {},
   streamId = null,
+  jobCreatedAt,
   user,
 }: {
   res: ServerResponse;
   messageId: string;
   conversationId: string;
   userId: string | ObjectId;
+  /** Agent partition; omit for the shared personal pool */
+  agentId?: string;
   memoryMethods: RequiredMemoryMethods;
   config?: MemoryConfig;
   streamId?: string | null;
+  jobCreatedAt?: number;
   user?: IUser;
 }): Promise<[string, (messages: BaseMessage[]) => Promise<(TAttachment | null)[] | undefined>]> {
   const { validKeys, instructions, llmConfig, tokenLimit } = config;
@@ -895,6 +954,7 @@ export async function createMemoryProcessor({
 
   const { withKeys, withoutKeys, totalTokens } = await memoryMethods.getFormattedMemories({
     userId,
+    agentId,
   });
 
   return [
@@ -904,12 +964,14 @@ export async function createMemoryProcessor({
         return await processMemory({
           res,
           userId,
+          agentId,
           messages,
           validKeys,
           llmConfig,
           messageId,
           tokenLimit,
           streamId,
+          jobCreatedAt,
           conversationId,
           memory: withKeys,
           totalTokens: totalTokens || 0,
@@ -930,11 +992,13 @@ async function handleMemoryArtifact({
   data,
   metadata,
   streamId = null,
+  jobCreatedAt,
 }: {
   res: ServerResponse;
   data: ToolEndData;
   metadata?: ToolEndMetadata;
   streamId?: string | null;
+  jobCreatedAt?: number;
 }) {
   const output = data?.output as ToolMessage | undefined;
   if (!output) {
@@ -961,7 +1025,11 @@ async function handleMemoryArtifact({
     return attachment;
   }
   if (streamId) {
-    GenerationJobManager.emitChunk(streamId, { event: 'attachment', data: attachment });
+    GenerationJobManager.emitChunk(
+      streamId,
+      { event: 'attachment', data: attachment },
+      { expectedCreatedAt: jobCreatedAt },
+    );
   } else {
     res.write(`event: attachment\ndata: ${JSON.stringify(attachment)}\n\n`);
   }
@@ -974,16 +1042,19 @@ async function handleMemoryArtifact({
  * @param params.res - The server response object
  * @param params.artifactPromises - Array to collect artifact promises
  * @param params.streamId - The stream ID for resumable mode, or null for standard mode
+ * @param params.jobCreatedAt - The generation epoch that owns emitted artifacts
  * @returns The memory callback function
  */
 export function createMemoryCallback({
   res,
   artifactPromises,
   streamId = null,
+  jobCreatedAt,
 }: {
   res: ServerResponse;
   artifactPromises: Promise<Partial<TAttachment> | null>[];
   streamId?: string | null;
+  jobCreatedAt?: number;
 }): ToolEndCallback {
   return async (data: ToolEndData, metadata?: Record<string, unknown>) => {
     const output = data?.output as ToolMessage | undefined;
@@ -992,7 +1063,7 @@ export function createMemoryCallback({
       return;
     }
     artifactPromises.push(
-      handleMemoryArtifact({ res, data, metadata, streamId }).catch((error) => {
+      handleMemoryArtifact({ res, data, metadata, streamId, jobCreatedAt }).catch((error) => {
         logger.error('Error processing memory artifact content:', error);
         return null;
       }),

@@ -1,3 +1,4 @@
+import type { TFile } from './files';
 import { inputTokensIncludesCache } from '../schemas';
 
 export enum ContentTypes {
@@ -11,6 +12,8 @@ export enum ContentTypes {
   INPUT_AUDIO = 'input_audio',
   AGENT_UPDATE = 'agent_update',
   SUMMARY = 'summary',
+  ACTIVITY_LABEL = 'activity_label',
+  STEER = 'steer',
   ERROR = 'error',
 }
 
@@ -40,7 +43,15 @@ export enum StepEvents {
   ON_SUMMARIZE_DELTA = 'on_summarize_delta',
   ON_SUMMARIZE_COMPLETE = 'on_summarize_complete',
   ON_SUBAGENT_UPDATE = 'on_subagent_update',
+  ON_SANDBOX_STARTING = 'on_sandbox_starting',
 }
+
+/** Payload for {@link StepEvents.ON_SANDBOX_STARTING} — the stateful code
+ * sandbox is cold-booting for the given code tool call. */
+export type SandboxStartingEvent = {
+  tool_call_id: string;
+  runId?: string;
+};
 
 /** Token-tracking event names streamed to the client (separate from StepEvents dispatch). */
 export enum UsageEvents {
@@ -56,6 +67,103 @@ export enum UsageEvents {
 export enum ApprovalEvents {
   ON_PENDING_ACTION = 'on_pending_action',
 }
+
+/**
+ * Steering event names. `on_steer_applied` streams to live clients when a
+ * queued steer message is injected at a tool-batch boundary; reconnecting
+ * clients recover injected steers from `aggregatedContent` and still-queued
+ * ones from `resumeState.pendingSteers`. Steers that never reach a boundary
+ * ride the final/abort events as `pendingSteers`.
+ */
+export enum SteerEvents {
+  ON_STEER_APPLIED = 'on_steer_applied',
+  /** Durable capability correction for queued steers after HITL handover. */
+  ON_STEER_UPDATED = 'on_steer_updated',
+}
+
+/**
+ * Activity-label event names. `on_activity_label` streams to live clients
+ * when a tool-batch or parent-phase label part is claimed and again when the
+ * fast-model label resolves; reconnecting clients recover applied labels
+ * from `aggregatedContent` like any other content part.
+ */
+export enum ActivityLabelEvents {
+  ON_ACTIVITY_LABEL = 'on_activity_label',
+}
+
+/** Payload of the `on_activity_label` SSE event. */
+export type TActivityLabelEvent = {
+  /** Absolute content index the label part occupies. */
+  index: number;
+  part: {
+    type: ContentTypes.ACTIVITY_LABEL;
+    [ContentTypes.ACTIVITY_LABEL]: string;
+    /** Missing means a per-batch activity label. */
+    activity_label_type?: 'phase';
+    tool_call_ids?: string[];
+    activity_start_index?: number;
+    activity_count?: number;
+    agent_ids?: string[];
+    counts?: {
+      searches: number;
+      reads: number;
+      writes: number;
+      commands: number;
+      other: number;
+    };
+    status?: 'ok' | 'partial' | 'failed';
+    agentId?: string;
+    pending?: boolean;
+  };
+  responseMessageId?: string;
+  conversationId?: string;
+};
+
+/** A steer message queued server-side but not yet injected into the run. */
+export type TPendingSteer = {
+  steerId: string;
+  /** Correlates a server steer with its optimistic chip when terminal delivery
+   *  races ahead of the POST response. */
+  clientSteerId?: string;
+  text: string;
+  createdAt?: number;
+  files?: Partial<TFile>[];
+  /** The steer asked to interrupt generation at the next safe boundary —
+   *  kept on parked/replayed chips so the "interrupting" label survives. */
+  preempt?: boolean;
+  /** Monotonic server revision for last-writer-wins interrupt labels. */
+  preemptRevision?: number;
+};
+
+/** Payload of the `on_steer_applied` SSE event. */
+export type TSteerAppliedEvent = {
+  steerId: string;
+  /** Correlates the applied event with the optimistic chip before the POST settles. */
+  clientSteerId?: string;
+  /** Absolute content index the steer part was injected at. */
+  index: number;
+  part: {
+    type: ContentTypes.STEER;
+    [ContentTypes.STEER]: string;
+    steerId?: string;
+    clientSteerId?: string;
+    createdAt?: number;
+    files?: Partial<TFile>[];
+  };
+  responseMessageId?: string;
+  conversationId?: string;
+};
+
+/** A queued steer's interrupt label changed without moving its FIFO slot. */
+export type TSteerUpdatedEvent = {
+  conversationId: string;
+  steers: Array<{
+    steerId: string;
+    clientSteerId?: string;
+    preempt: boolean;
+    preemptRevision: number;
+  }>;
+};
 
 /** Mirrors TokenBudgetBreakdown from @librechat/agents (data-provider cannot import it). */
 export type TTokenBudgetBreakdown = {
@@ -126,8 +234,9 @@ export type TTokenUsageEvent = {
   provider?: string;
   /** Non-primary buckets fold into session cost/totals but not the live
    *  context gauge: hidden sequential-agent calls (`sequential`), summary
-   *  passes (`summarization`), and isolated subagent runs (`subagent`) */
-  usage_type?: 'summarization' | 'subagent' | 'sequential';
+   *  passes (`summarization`), isolated subagent runs (`subagent`), and
+   *  fast-model activity headers (`activity-label`, `activity-phase`) */
+  usage_type?: 'summarization' | 'subagent' | 'sequential' | 'activity-label' | 'activity-phase';
   runId?: string;
   /** Per-run emission sequence; keeps identical payloads from distinct model calls unique */
   seq?: number;

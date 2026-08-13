@@ -85,7 +85,7 @@ export interface SharedLinksListParams {
 export type SharedLinkItem = {
   shareId: string;
   title: string;
-  createdAt: Date;
+  createdAt: string;
   conversationId: string;
 };
 
@@ -150,6 +150,10 @@ export type TUserMemory = {
   value: string;
   updated_at: string;
   tokenCount?: number;
+  /** Agent partition this memory belongs to; absent = shared personal pool */
+  agentId?: string;
+  /** Display name of the partition's agent, resolved server-side when available */
+  agentName?: string;
 };
 
 export type MemoriesResponse = {
@@ -196,6 +200,12 @@ export type ListRolesResponse = {
 export interface MCPServerStatus {
   requiresOAuth: boolean;
   connectionState: 'disconnected' | 'connecting' | 'connected' | 'error';
+  authorizationState?:
+    | 'not_required'
+    | 'authorizing'
+    | 'authorized'
+    | 'needs_authorization'
+    | 'error';
 }
 
 export interface MCPConnectionStatusResponse {
@@ -210,6 +220,7 @@ export interface MCPServerConnectionStatusResponse {
   serverName: string;
   requiresOAuth: boolean;
   connectionStatus: 'disconnected' | 'connecting' | 'connected' | 'error';
+  authorizationState?: MCPServerStatus['authorizationState'];
 }
 
 export interface MCPAuthValuesResponse {

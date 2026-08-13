@@ -162,9 +162,35 @@ describe('loadAgent', () => {
     );
 
     expect(mockGetMCPServerTools).toHaveBeenCalledTimes(1);
-    expect(mockGetMCPServerTools).toHaveBeenCalledWith('user123', 'server1');
+    expect(mockGetMCPServerTools).toHaveBeenCalledWith('user123', 'server1', undefined);
     expect(result?.tools).toContain(`${Constants.mcp_all}${Constants.mcp_delimiter}body-scoped`);
     expect(result?.tools).toContain('tool1_mcp_server1');
+  });
+
+  test('addresses cached tools with a non-ephemeral request overlay', async () => {
+    const { EPHEMERAL_AGENT_ID } = Constants;
+    const overlayConfig = {
+      type: 'streamable-http' as const,
+      url: 'https://overlay.example.com/mcp',
+    };
+    mockGetMCPServerTools.mockResolvedValue({ overlay_tool_mcp_overlay: {} });
+
+    const result = await loadAgent(
+      {
+        req: {
+          user: { id: 'user123' },
+          config: { mcpConfig: { overlay: overlayConfig } } as unknown as AppConfig,
+          body: { ephemeralAgent: { mcp: ['overlay'] } },
+        },
+        agent_id: EPHEMERAL_AGENT_ID as string,
+        endpoint: 'openai',
+        model_parameters: { model: 'gpt-4' } as unknown as AgentModelParameters,
+      },
+      deps,
+    );
+
+    expect(mockGetMCPServerTools).toHaveBeenCalledWith('user123', 'overlay', overlayConfig);
+    expect(result?.tools).toContain('overlay_tool_mcp_overlay');
   });
 
   test('should return null for non-existent agent', async () => {
@@ -389,6 +415,102 @@ describe('loadAgent', () => {
     expect(withoutFlag?.tools).not.toContain('ask_user_question');
   });
 
+  test('synthesizes background tool_options for eligible MCP tools from the ephemeralAgent flag', async () => {
+    const { EPHEMERAL_AGENT_ID } = Constants;
+    mockGetMCPServerTools.mockResolvedValue({ crm_lookup: { name: 'crm_lookup' } });
+
+    const result = await loadAgent(
+      {
+        req: {
+          user: { id: 'user123' },
+          body: {
+            ephemeralAgent: {
+              mcp: ['crm'],
+              web_search: true,
+              execute_code: true,
+              run_in_background: true,
+            } as TEphemeralAgent,
+          },
+        },
+        agent_id: EPHEMERAL_AGENT_ID as string,
+        endpoint: 'openai',
+        model_parameters: { model: 'gpt-4' } as unknown as AgentModelParameters,
+      },
+      deps,
+    );
+
+    // recorded as a wildcard policy; eligibility (e.g. excluding web_search)
+    // is enforced against the final definitions in applyBackgroundToolCalls
+    expect(result?.tool_options).toEqual({ '*': { run_in_background: true } });
+  });
+
+  test('synthesizes background tool_options from a model spec: true opts in, false is an explicit opt-out, absent is no policy', async () => {
+    const { EPHEMERAL_AGENT_ID } = Constants;
+    mockGetMCPServerTools.mockResolvedValue({ crm_lookup: { name: 'crm_lookup' } });
+
+    const buildReq = (specName: string, runInBackground?: boolean): LoadAgentParams['req'] =>
+      ({
+        user: { id: 'user123' },
+        body: {},
+        config: {
+          config: {},
+          fileStrategy: FileSources.local,
+          imageOutputType: 'png',
+          modelSpecs: {
+            list: [
+              {
+                name: specName,
+                label: specName,
+                preset: { endpoint: 'openai', model: 'gpt-4' },
+                webSearch: true,
+                mcpServers: ['crm'],
+                runInBackground,
+              },
+            ],
+          },
+        },
+      }) as unknown as LoadAgentParams['req'];
+
+    const withFlag = await loadAgent(
+      {
+        req: buildReq('bg-on', true),
+        spec: 'bg-on',
+        agent_id: EPHEMERAL_AGENT_ID as string,
+        endpoint: 'openai',
+        model_parameters: { model: 'gpt-4' } as unknown as AgentModelParameters,
+      },
+      deps,
+    );
+    expect(withFlag?.tool_options).toEqual({ '*': { run_in_background: true } });
+
+    const withoutFlag = await loadAgent(
+      {
+        req: buildReq('bg-absent', undefined),
+        spec: 'bg-absent',
+        agent_id: EPHEMERAL_AGENT_ID as string,
+        endpoint: 'openai',
+        model_parameters: { model: 'gpt-4' } as unknown as AgentModelParameters,
+      },
+      deps,
+    );
+    expect(withoutFlag?.tool_options).toBeUndefined();
+
+    /** `false` must synthesize an explicit wildcard opt-out (not stay a
+     *  no-op): the background-native code pair would otherwise default on
+     *  against an admin's written `runInBackground: false`. */
+    const withFalse = await loadAgent(
+      {
+        req: buildReq('bg-off', false),
+        spec: 'bg-off',
+        agent_id: EPHEMERAL_AGENT_ID as string,
+        endpoint: 'openai',
+        model_parameters: { model: 'gpt-4' } as unknown as AgentModelParameters,
+      },
+      deps,
+    );
+    expect(withFalse?.tool_options).toEqual({ '*': { run_in_background: false } });
+  });
+
   test('should enable full skill scope for ephemeral model spec with skills true', async () => {
     const { EPHEMERAL_AGENT_ID } = Constants;
 
@@ -573,6 +695,37 @@ describe('loadAgent', () => {
     );
 
     expect(result?.subagents).toBeUndefined();
+  });
+
+  test('addresses added-agent cached tools with the effective config overlay', async () => {
+    const overlayConfig = {
+      type: 'streamable-http' as const,
+      url: 'https://overlay.example.com/mcp',
+    };
+    mockGetMCPServerTools.mockResolvedValue({ overlay_tool_mcp_overlay: {} });
+
+    const result = await loadAddedAgent(
+      {
+        req: {
+          user: { id: 'user123' },
+          config: {
+            config: {},
+            fileStrategy: FileSources.local,
+            imageOutputType: 'png',
+            mcpConfig: { overlay: overlayConfig },
+          },
+        },
+        conversation: {
+          endpoint: 'openai',
+          model: 'gpt-4',
+          ephemeralAgent: { mcp: ['overlay'] },
+        } as unknown as TConversation,
+      },
+      deps,
+    );
+
+    expect(mockGetMCPServerTools).toHaveBeenCalledWith('user123', 'overlay', overlayConfig);
+    expect(result?.tools).toContain('overlay_tool_mcp_overlay');
   });
 
   test('should enable full skill scope for added ephemeral model spec with skills true', async () => {

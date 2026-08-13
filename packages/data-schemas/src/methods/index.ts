@@ -77,6 +77,8 @@ import {
   validateSkillBody,
   validateRelativePath,
   validateSkillFrontmatter,
+  getCanonicalSkillFrontmatterKey,
+  normalizeSkillFrontmatterKeys,
   validateSkillDescription,
   deriveStructuredFrontmatterFields,
   inferSkillFileCategory,
@@ -103,8 +105,33 @@ import { createAgentMethods, type AgentMethods, type AgentDeps } from './agent';
 import { createConfigMethods, type ConfigMethods } from './config';
 import { createInstitutionMethods, type InstitutionMethods } from './institution';
 import { createPlatformAdminMethods, type PlatformAdminMethods } from './platformAdmin';
+import {
+  createMCPAuthorityMethods,
+  MCPAuthorityProofError,
+  MAX_MCP_AUTHORITY_TARGETS,
+  createMCPAuthorityBootRevision,
+  createMCPAuthorityConfigSourceRevision,
+  createMCPAuthorityCredentialRevision,
+  createMCPAuthorityDatabaseSourceRevision,
+  digestMCPAuthorityValue,
+  type MCPAuthorityMethods,
+  type MCPAuthorityMethodHooks,
+  type MCPAuthorityConfigSourceDocument,
+  type MCPAuthorityCredentialSourceDocument,
+} from './mcpAuthority';
 
-export { RoleConflictError, DEFAULT_REFRESH_TOKEN_EXPIRY, DEFAULT_SESSION_EXPIRY };
+export {
+  RoleConflictError,
+  MCPAuthorityProofError,
+  MAX_MCP_AUTHORITY_TARGETS,
+  DEFAULT_REFRESH_TOKEN_EXPIRY,
+  DEFAULT_SESSION_EXPIRY,
+  createMCPAuthorityBootRevision,
+  createMCPAuthorityConfigSourceRevision,
+  createMCPAuthorityCredentialRevision,
+  createMCPAuthorityDatabaseSourceRevision,
+  digestMCPAuthorityValue,
+};
 export { tokenValues, cacheTokenValues, premiumTokenValues, defaultRate, createTxMethods };
 export { permissionBitSupersets };
 export {
@@ -113,6 +140,8 @@ export {
   validateSkillBody,
   validateRelativePath,
   validateSkillFrontmatter,
+  getCanonicalSkillFrontmatterKey,
+  normalizeSkillFrontmatterKeys,
   validateSkillDescription,
   deriveStructuredFrontmatterFields,
   inferSkillFileCategory,
@@ -157,7 +186,8 @@ export type AllMethods = UserMethods &
   AgentMethods &
   ConfigMethods &
   InstitutionMethods &
-  PlatformAdminMethods;
+  PlatformAdminMethods &
+  MCPAuthorityMethods;
 
 /** Dependencies injected from the api layer into createMethods */
 export interface CreateMethodsDeps {
@@ -172,6 +202,8 @@ export interface CreateMethodsDeps {
   removeAllPermissions?: (params: { resourceType: string; resourceId: unknown }) => Promise<void>;
   /** Returns a cache store for the given key. From getLogStores. */
   getCache?: RoleDeps['getCache'];
+  /** Recognizes agent skill IDs supplied by an external, non-database registry. */
+  isExternalSkillId?: AgentDeps['isExternalSkillId'];
 }
 
 /**
@@ -250,11 +282,12 @@ export function createMethods(
     removeAllPermissions,
     getActions: actionMethods.getActions,
     getSoleOwnedResourceIds: aclEntryMethods.getSoleOwnedResourceIds,
+    isExternalSkillId: deps.isExternalSkillId,
   };
   const agentMethods = createAgentMethods(mongoose, agentDeps);
 
   return {
-    ...createUserMethods(mongoose),
+    ...createUserMethods(mongoose, { getCache: deps.getCache }),
     ...createSessionMethods(mongoose),
     ...createTokenMethods(mongoose),
     ...roleMethods,
@@ -297,6 +330,8 @@ export function createMethods(
     ...createConfigMethods(mongoose),
     ...institutionMethods,
     ...platformAdminMethods,
+    /* MCP authority proofs */
+    ...createMCPAuthorityMethods(mongoose),
   };
 }
 
@@ -352,4 +387,8 @@ export type {
   ConfigMethods,
   InstitutionMethods,
   PlatformAdminMethods,
+  MCPAuthorityMethods,
+  MCPAuthorityMethodHooks,
+  MCPAuthorityConfigSourceDocument,
+  MCPAuthorityCredentialSourceDocument,
 };

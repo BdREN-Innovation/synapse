@@ -61,6 +61,9 @@ const openAIModels = {
   'gpt-5.4-nano': 400000,
   'gpt-5.5': 1050000,
   'gpt-5.5-pro': 1050000,
+  'gpt-5.6': 1050000,
+  'gpt-5.6-terra': 1050000,
+  'gpt-5.6-luna': 1050000,
   'chat-latest': 400000,
   'gpt-5-mini': 400000,
   'gpt-5-nano': 400000,
@@ -130,6 +133,8 @@ const googleModels = {
   'gemini-3.1': 1000000,
   'gemini-3.1-flash-lite': 1000000,
   'gemini-3.5-flash': 1048576,
+  'gemini-3.5-flash-lite': 1048576,
+  'gemini-3.6-flash': 1048576,
 };
 
 const anthropicModels = {
@@ -167,6 +172,7 @@ const anthropicModels = {
   'claude-opus-4-6': 1000000,
   'claude-opus-4-7': 1000000,
   'claude-opus-4-8': 1000000,
+  'claude-opus-5': 1000000,
   'claude-fable-5': 1000000,
   'claude-mythos-5': 1000000,
 };
@@ -433,6 +439,9 @@ export const modelMaxOutputs = {
   'gpt-5.4-nano': 128000,
   'gpt-5.5': 128000,
   'gpt-5.5-pro': 128000,
+  'gpt-5.6': 128000,
+  'gpt-5.6-terra': 128000,
+  'gpt-5.6-luna': 128000,
   'chat-latest': 128000,
   'gpt-5-mini': 128000,
   'gpt-5-nano': 128000,
@@ -464,6 +473,7 @@ const anthropicMaxOutputs = {
   'claude-opus-4-6': 128000,
   'claude-opus-4-7': 128000,
   'claude-opus-4-8': 128000,
+  'claude-opus-5': 128000,
   'claude-fable-5': 128000,
   'claude-mythos-5': 128000,
   'claude-3.5-sonnet': 8192,

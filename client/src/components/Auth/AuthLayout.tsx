@@ -40,7 +40,10 @@ function AuthLayout({
         <div className="mx-auto sm:max-w-sm">
           <ErrorMessage>
             {localize('com_auth_error_invalid_reset_token')}{' '}
-            <a className="font-semibold text-green-600 hover:underline" href="/forgot-password">
+            <a
+              className="font-semibold text-accent-primary hover:underline"
+              href="/forgot-password"
+            >
               {localize('com_auth_click_here')}
             </a>{' '}
             {localize('com_auth_to_try_again')}
@@ -58,7 +61,7 @@ function AuthLayout({
   };
 
   return (
-    <div className="relative flex min-h-screen flex-col bg-white dark:bg-gray-900">
+    <div className="relative flex min-h-screen flex-col bg-surface-primary">
       <NetworkBackground />
       <div className="relative z-10">
         <Banner />
@@ -71,7 +74,7 @@ function AuthLayout({
       </div>
 
       <main className="relative z-10 flex flex-grow items-center justify-center">
-        <div className="w-authPageWidth overflow-hidden rounded-2xl border border-border-light bg-white px-6 py-8 shadow-[0_24px_64px_-20px_rgba(16,12,32,0.28)] dark:bg-gray-900 dark:shadow-[0_24px_64px_-20px_rgba(0,0,0,0.7)] sm:max-w-md lg:w-full lg:max-w-3xl lg:px-10">
+        <div className="w-authPageWidth overflow-hidden rounded-2xl border border-border-light bg-surface-primary px-6 py-8 shadow-xl sm:max-w-md lg:w-full lg:max-w-3xl lg:px-10">
           <div className="flex flex-col items-center gap-6 lg:flex-row lg:items-center lg:gap-10">
             <div className="flex flex-col items-center gap-4 lg:w-2/5 lg:border-r lg:border-border-light lg:pr-8">
               <BlinkAnimation active={isFetching}>
@@ -89,7 +92,7 @@ function AuthLayout({
             <div className="w-full lg:w-3/5">
               {!hasStartupConfigError && !isFetching && header && (
                 <h1
-                  className="mb-4 text-center text-3xl font-semibold text-black dark:text-white lg:text-left"
+                  className="mb-4 text-center text-3xl font-semibold text-text-primary lg:text-left"
                   style={{ userSelect: 'none' }}
                 >
                   {header}

@@ -1,15 +1,19 @@
 import { Types } from 'mongoose';
-import { Run, Providers } from '@librechat/agents';
+import { Tools, MemoryScope } from 'librechat-data-provider';
+import { Run, Providers, GraphEvents } from '@librechat/agents';
 import type { IUser } from '@librechat/data-schemas';
 import type { Response } from 'express';
 import {
   processMemory,
+  createMemoryProcessor,
   createMemoryTool,
-  createDeleteMemoryTool,
+  getMemoryAgentId,
   getRequestMemories,
+  createDeleteMemoryTool,
   invalidateRequestMemories,
   agentHasInlineMemoryTools,
 } from './memory';
+import { GenerationJobManager } from '~/stream/GenerationJobManager';
 
 jest.mock('~/stream/GenerationJobManager');
 
@@ -66,17 +70,13 @@ jest.mock('~/utils', () => ({
 
 const { createSafeUser } = jest.requireMock('~/utils');
 
-jest.mock('@librechat/agents', () => {
-  const actual = jest.requireActual('@librechat/agents');
-  return {
-    Run: {
-      create: jest.fn(() => ({
+beforeEach(() => {
+  jest.spyOn(Run, 'create').mockImplementation(
+    () =>
+      ({
         processStream: jest.fn(() => Promise.resolve('success')),
-      })),
-    },
-    Providers: actual.Providers,
-    GraphEvents: actual.GraphEvents,
-  };
+      }) as never,
+  );
 });
 
 function createTestUser(overrides: Partial<IUser> = {}): IUser {
@@ -95,6 +95,72 @@ function createTestUser(overrides: Partial<IUser> = {}): IUser {
     ...overrides,
   } as IUser;
 }
+
+describe('Memory attachment generation fencing', () => {
+  it('emits artifacts with the generation epoch that started memory processing', async () => {
+    const memoryArtifact = {
+      type: 'update' as const,
+      key: 'response_style',
+      value: 'concise',
+    };
+    const processStream = jest.fn(async () => {
+      const runConfig = (Run.create as jest.Mock).mock.calls[0][0];
+      runConfig.customHandlers[GraphEvents.TOOL_END].handle(
+        GraphEvents.TOOL_END,
+        {
+          output: {
+            tool_call_id: 'memory-call-1',
+            artifact: { [Tools.memory]: memoryArtifact },
+          },
+        },
+        {
+          run_id: 'response-1',
+          thread_id: 'conversation-1',
+        },
+      );
+      return 'success';
+    });
+    (Run.create as jest.Mock).mockReturnValueOnce({ processStream });
+
+    const [, runMemory] = await createMemoryProcessor({
+      res: {
+        headersSent: true,
+        write: jest.fn(),
+      } as unknown as Response,
+      userId: 'user-1',
+      messageId: 'response-1',
+      conversationId: 'conversation-1',
+      streamId: 'conversation-1',
+      jobCreatedAt: 1234,
+      memoryMethods: {
+        setMemory: jest.fn(),
+        deleteMemory: jest.fn(),
+        getFormattedMemories: jest.fn().mockResolvedValue({
+          withKeys: '',
+          withoutKeys: '',
+          totalTokens: 0,
+        }),
+      },
+    });
+
+    await runMemory([]);
+
+    expect(GenerationJobManager.emitChunk).toHaveBeenCalledWith(
+      'conversation-1',
+      {
+        event: 'attachment',
+        data: {
+          type: Tools.memory,
+          toolCallId: 'memory-call-1',
+          messageId: 'response-1',
+          conversationId: 'conversation-1',
+          [Tools.memory]: memoryArtifact,
+        },
+      },
+      { expectedCreatedAt: 1234 },
+    );
+  });
+});
 
 describe('Memory Agent Header Resolution', () => {
   let testUser: IUser;
@@ -705,5 +771,45 @@ describe('getRequestMemories caching', () => {
     invalidateRequestMemories(req);
     await getRequestMemories({ req, userId: 'user-1', getFormattedMemories });
     expect(getFormattedMemories).toHaveBeenCalledTimes(2);
+  });
+
+  it('caches and invalidates per partition', async () => {
+    const getFormattedMemories = jest
+      .fn()
+      .mockResolvedValue({ withKeys: '', withoutKeys: '', totalTokens: 10 });
+    const req = {};
+
+    await getRequestMemories({ req, userId: 'user-1', getFormattedMemories });
+    await getRequestMemories({ req, userId: 'user-1', agentId: 'agent_a', getFormattedMemories });
+    await getRequestMemories({ req, userId: 'user-1', agentId: 'agent_a', getFormattedMemories });
+    /** Personal pool and agent partition are distinct cache entries. */
+    expect(getFormattedMemories).toHaveBeenCalledTimes(2);
+    expect(getFormattedMemories).toHaveBeenLastCalledWith({
+      userId: 'user-1',
+      agentId: 'agent_a',
+    });
+
+    /** Invalidating one partition leaves the other cached. */
+    invalidateRequestMemories(req, 'agent_a');
+    await getRequestMemories({ req, userId: 'user-1', getFormattedMemories });
+    expect(getFormattedMemories).toHaveBeenCalledTimes(2);
+    await getRequestMemories({ req, userId: 'user-1', agentId: 'agent_a', getFormattedMemories });
+    expect(getFormattedMemories).toHaveBeenCalledTimes(3);
+  });
+});
+
+describe('getMemoryAgentId', () => {
+  it('resolves the agent partition only for memory_scope "agent"', () => {
+    expect(getMemoryAgentId({ id: 'agent_a', memory_scope: MemoryScope.agent })).toBe('agent_a');
+    expect(getMemoryAgentId({ id: 'agent_a', memory_scope: MemoryScope.user })).toBeUndefined();
+    expect(getMemoryAgentId({ id: 'agent_a' })).toBeUndefined();
+    expect(getMemoryAgentId({ memory_scope: MemoryScope.agent })).toBeUndefined();
+    expect(getMemoryAgentId(null)).toBeUndefined();
+  });
+
+  it('strips runtime id suffixes so added-conversation runs share the persisted partition', () => {
+    expect(getMemoryAgentId({ id: 'agent_a____1', memory_scope: MemoryScope.agent })).toBe(
+      'agent_a',
+    );
   });
 });
