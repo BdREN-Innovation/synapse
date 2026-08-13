@@ -35,10 +35,6 @@ docker build \
   "$workspace"
 
 start_candidate_services
-if [[ "$(env_get RUN_USAGE_POLICY_MIGRATION)" == true ]]; then
-  run_candidate_migration "$image" --dry-run
-  run_candidate_migration "$image"
-fi
 
 log "preflighting $image on 127.0.0.1:$preflight_port"
 run_candidate "$PREFLIGHT_CONTAINER" "$image" "$preflight_port" no
