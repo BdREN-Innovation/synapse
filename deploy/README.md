@@ -184,7 +184,7 @@ From the existing trusted checkout:
 
 ```sh
 cd /home/bdren/synapse
-sudo ./deploy/bootstrap.sh
+sudo bash deploy/bootstrap.sh
 ```
 
 This creates:
@@ -256,6 +256,7 @@ Expected settings:
 
 ```dotenv
 EXPECTED_REPOSITORY_SLUG=nafew0/synapse
+DEPLOY_BRANCH=production
 CANDIDATE_ENV_FILE=/home/bdren/synapse/candidate/.env
 CANDIDATE_CONFIG_FILE=/home/bdren/synapse/candidate/librechat.yaml
 CANDIDATE_PORT=3081

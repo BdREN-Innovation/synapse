@@ -37,14 +37,18 @@ required_env() {
 }
 
 validate_production_checkout() {
-  local workspace=$1 expected_slug remote head production
+  local workspace=$1 expected_slug remote head deploy_branch expected_head
   expected_slug=$(required_env EXPECTED_REPOSITORY_SLUG)
+  deploy_branch=$(env_get DEPLOY_BRANCH)
+  deploy_branch=${deploy_branch:-production}
+  [[ "$deploy_branch" =~ ^[A-Za-z0-9._/-]+$ ]] || die "invalid DEPLOY_BRANCH: $deploy_branch"
   remote=$(git -C "$workspace" remote get-url origin)
   [[ "$remote" == "https://github.com/$expected_slug.git" || "$remote" == "git@github.com:$expected_slug.git" ]] \
     || die "unexpected repository remote: $remote"
   head=$(git -C "$workspace" rev-parse HEAD)
-  production=$(git -C "$workspace" rev-parse refs/remotes/origin/production)
-  [[ "$head" == "$production" ]] || die 'checkout does not exactly match origin/production'
+  expected_head=$(git -C "$workspace" rev-parse "refs/remotes/origin/$deploy_branch") \
+    || die "origin/$deploy_branch is not available; run git fetch origin $deploy_branch"
+  [[ "$head" == "$expected_head" ]] || die "checkout does not exactly match origin/$deploy_branch"
   git -C "$workspace" diff --quiet || die 'checkout has modified tracked files'
   git -C "$workspace" diff --cached --quiet || die 'checkout has staged changes'
 }
