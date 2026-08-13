@@ -6,7 +6,6 @@ meili_data*
 data/
 logs
 *.log
-skill/
 plans/
 docs/
 
