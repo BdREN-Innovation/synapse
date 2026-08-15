@@ -27,10 +27,6 @@ interface:
     use: false
   fileCitations: true
 
-registration:
-  socialLogins: []
-
-
 modelSpecs:
   enforce: true
   prioritize: true
@@ -50,6 +46,7 @@ modelSpecs:
       preset:
         endpoint: OpenAI
         model: gpt-5.6-luna
+        useResponsesApi: true
         promptPrefix: |
           You assist non-technical office users with emails, letters, reports,
           research, document editing, meeting materials, and presentations.
@@ -99,14 +96,14 @@ modelSpecs:
       label: Claude Sonnet 4.5
       askUserQuestion: true
       preset:
-        endpoint: anthropic
+        endpoint: Claude
         model: claude-sonnet-4-5
 
     - name: claude-haiku-4-5
       label: Claude Haiku 4.5
       askUserQuestion: true
       preset:
-        endpoint: anthropic
+        endpoint: Claude
         model: claude-haiku-4-5
         promptPrefix: |
           You assist non-technical office users with emails, letters, reports,
@@ -143,12 +140,6 @@ modelSpecs:
 
 endpoints:
   agents:
-    models:
-      default:
-        - 'gpt-5.6-luna'
-        - 'claude-haiku-4-5'
-        - 'google/gemini-3.1-flash-image'
-      fetch: false
     allowedProviders: ['OpenAI', 'Claude', 'OpenRouter', 'OpenRouter Image', 'anthropic']
     capabilities:
       - 'subagents'
@@ -164,10 +155,11 @@ endpoints:
   anthropic:
     apiKey: '${ANTHROPIC_API_KEY}'
     models:
-      - 'claude-sonnet-4-5'
-      - 'claude-haiku-4-5'
+      - 'claude-opus-4-1-20250805'
+      - 'claude-sonnet-4-20250514'
+      - 'claude-3-5-haiku-20241022'
     titleConvo: true
-    titleModel: 'claude-haiku-4-5'
+    titleModel: 'claude-3-5-haiku-20241022'
 
   custom:
     - name: OpenAI
@@ -223,8 +215,13 @@ endpoints:
       modelDisplayLabel: 'OpenRouter Image'
       # Gemini image models charge a flat ~1120 image tokens regardless of ratio
       # (verified against the live API), so this is a framing choice, not a cost one.
+      # `modalities: ['image']` (no 'text') forces the model to always return an
+      # image rather than sometimes replying with a text-only answer for prompts
+      # it interprets as a question/discussion instead of a generation request
+      # (verified: 'Batman vs Superman' produced a 1000+ word essay with no image
+      # under ['image','text'], but a real image under ['image'] alone).
       addParams:
-        modalities: ['image', 'text']
+        modalities: ['image']
         image_config:
           aspect_ratio: '16:9'
 
@@ -238,4 +235,5 @@ endpoints:
       titleConvo: true
       dropParams: ['stop']
       modelDisplayLabel: 'NVIDIA'
+
 

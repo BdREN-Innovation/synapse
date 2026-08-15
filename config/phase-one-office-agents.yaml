@@ -106,7 +106,7 @@ specialists:
       Produce one image per invocation; additional variations require new requests.
       Apply workplace-safe content rules and clearly report provider safety refusals.
       Return generated images as persisted, visible, downloadable attachments.
-    provider: OpenRouter
+    provider: OpenRouter Image
     model: google/gemini-3.1-flash-image
     model_parameters: { streaming: false }
     orchestrationOnly: true
