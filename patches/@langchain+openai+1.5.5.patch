@@ -1,0 +1,24 @@
+diff --git a/node_modules/@langchain/openai/dist/converters/completions.cjs b/node_modules/@langchain/openai/dist/converters/completions.cjs
+index e6953a9..3ec2d18 100644
+--- a/node_modules/@langchain/openai/dist/converters/completions.cjs
++++ b/node_modules/@langchain/openai/dist/converters/completions.cjs
+@@ -266,6 +266,7 @@ const convertCompletionsDeltaToBaseMessageChunk = ({ delta, rawResponse, include
+ 		...delta.audio,
+ 		index: rawResponse.choices[0].index
+ 	};
++	if (Array.isArray(delta.images)) additional_kwargs.images = delta.images;
+ 	const response_metadata = {
+ 		model_provider: "openai",
+ 		usage: { ...rawResponse.usage }
+diff --git a/node_modules/@langchain/openai/dist/converters/completions.js b/node_modules/@langchain/openai/dist/converters/completions.js
+index 10fa07a..de8202b 100644
+--- a/node_modules/@langchain/openai/dist/converters/completions.js
++++ b/node_modules/@langchain/openai/dist/converters/completions.js
+@@ -266,6 +266,7 @@ const convertCompletionsDeltaToBaseMessageChunk = ({ delta, rawResponse, include
+ 		...delta.audio,
+ 		index: rawResponse.choices[0].index
+ 	};
++	if (Array.isArray(delta.images)) additional_kwargs.images = delta.images;
+ 	const response_metadata = {
+ 		model_provider: "openai",
+ 		usage: { ...rawResponse.usage }

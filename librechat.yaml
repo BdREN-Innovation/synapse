@@ -1,29 +1,157 @@
+# Local configuration aligned with the enabled endpoints and models in `.env`.
+# Keep credentials and deployment secrets in `.env`; this file contains only
+# non-secret UI/model configuration.
 version: 1.3.13
+
 cache: true
 
 interface:
-  customWelcome: 'Welcome to BdREN Synapse. Ask me to draft, analyze, or convert your documents.'
-  privacyPolicy:
-    externalUrl: 'https://www.bdren.net.bd/privacy'
-    openNewTab: true
-  termsOfService:
-    externalUrl: 'https://www.bdren.net.bd/terms'
-    openNewTab: true
-  # Hide features noob office users do not need (trim to taste):
-  prompts: true
+  customWelcome: 'Welcome to BdREN Synapse!'
+  fileSearch: true
+  modelSelect: true
+  parameters: true
+  presets: true
+  prompts:
+    use: true
+    create: true
+    share: false
+    public: false
   bookmarks: true
-  multiConvo: false
-  agents: true
+  multiConvo: true
+  agents:
+    use: true
+    create: true
+    share: false
+    public: false
+  marketplace:
+    use: false
+  fileCitations: true
 
 registration:
   socialLogins: []
-  # allowedDomains:              # optional: restrict signup to member universities
-  #   - 'bdren.net.bd'
-  #   - 'gub.edu.bd'
+
+
+modelSpecs:
+  enforce: true
+  prioritize: true
+  list:
+    - name: office-assistant
+      label: Office Assistant
+      description: General office assistant with document, spreadsheet, presentation, mail, and image delegation.
+      default: true
+      group: Agents
+      preset:
+        endpoint: agents
+        agent_id: agent_office_assistant
+
+    - name: gpt-5.6-luna
+      label: GPT-5.6 Luna
+      askUserQuestion: true
+      preset:
+        endpoint: OpenAI
+        model: gpt-5.6-luna
+        promptPrefix: |
+          You assist non-technical office users with emails, letters, reports,
+          research, document editing, meeting materials, and presentations.
+
+          Before answering, check whether an important detail is missing. When
+          it is, ask a short plain-language follow-up question with 2–4 options.
+          Allow the user to provide another answer and ask no more than three
+          clarification questions for one request.
+          Do not ask for passwords, payment information, or other unnecessary
+          sensitive data. Do not ask for greetings or simple factual questions.
+
+    - name: gpt-4.1
+      label: GPT-4.1
+      askUserQuestion: true
+      preset:
+        endpoint: OpenAI
+        model: gpt-4.1
+        promptPrefix: |
+          You assist non-technical office users with emails, letters, reports,
+          research, document editing, meeting materials, and presentations.
+
+          Before answering, check whether an important detail is missing. When
+          it is, ask a short plain-language follow-up question with 2–4 options.
+          Allow the user to provide another answer and ask no more than three
+          clarification questions for one request.
+          Do not ask for passwords, payment information, or other unnecessary
+          sensitive data. Do not ask for greetings or simple factual questions.
+
+    - name: gpt-4o-mini
+      label: GPT-4o Mini
+      askUserQuestion: true
+      preset:
+        endpoint: OpenAI
+        model: gpt-4o-mini
+        promptPrefix: |
+          You assist non-technical office users with emails, letters, reports,
+          research, document editing, meeting materials, and presentations.
+
+          Before answering, check whether an important detail is missing. When
+          it is, ask a short plain-language follow-up question with 2–4 options.
+          Allow the user to provide another answer and ask no more than three
+          clarification questions for one request.
+          Do not ask for passwords, payment information, or other unnecessary
+          sensitive data. Do not ask for greetings or simple factual questions.
+
+    - name: claude-sonnet-4-5
+      label: Claude Sonnet 4.5
+      askUserQuestion: true
+      preset:
+        endpoint: anthropic
+        model: claude-sonnet-4-5
+
+    - name: claude-haiku-4-5
+      label: Claude Haiku 4.5
+      askUserQuestion: true
+      preset:
+        endpoint: anthropic
+        model: claude-haiku-4-5
+        promptPrefix: |
+          You assist non-technical office users with emails, letters, reports,
+          research, document editing, meeting materials, and presentations.
+
+          Before answering, check whether an important detail is missing. When
+          it is, ask a short plain-language follow-up question with 2–4 options.
+          Allow the user to provide another answer and ask no more than three
+          clarification questions for one request.
+          Do not ask for passwords, payment information, or other unnecessary
+          sensitive data. Do not ask for greetings or simple factual questions.
+
+    - name: moonshotai-kimi-k2-6
+      label: Kimi K2.6
+      askUserQuestion: true
+      preset:
+        endpoint: OpenRouter
+        model: moonshotai/kimi-k2.6
+    
+    
+    - name: google/gemini-3.1-flash-image
+      label: Nano Banana 2
+      preset:
+        endpoint: OpenRouter
+        model: google/gemini-3.1-flash-image
+        streaming: false
+
+    - name: z-ai-glm-5-2
+      label: GLM 5.2
+      askUserQuestion: true
+      preset:
+        endpoint: NVIDIA
+        model: z-ai/glm-5.2
 
 endpoints:
   agents:
+    models:
+      default:
+        - 'gpt-5.6-luna'
+        - 'claude-haiku-4-5'
+        - 'google/gemini-3.1-flash-image'
+      fetch: false
+    allowedProviders: ['OpenAI', 'Claude', 'OpenRouter', 'anthropic']
     capabilities:
+      - 'subagents'
       - 'execute_code'
       - 'file_search'
       - 'artifacts'
@@ -31,34 +159,61 @@ endpoints:
       - 'tools'
       - 'ocr'
       - 'context'
+      - 'ask_user_question'
+
+  anthropic:
+    apiKey: '${ANTHROPIC_API_KEY}'
+    models:
+      - 'claude-sonnet-4-5'
+      - 'claude-haiku-4-5'
+    titleConvo: true
+    titleModel: 'claude-haiku-4-5'
 
   custom:
-    - name: 'OpenRouter'
+    - name: OpenAI
+      apiKey: '${OPENAI_API_KEY}'
+      baseURL: 'https://api.openai.com/v1'
+      models:
+        default:
+          - 'gpt-5.6-luna'
+          - 'gpt-4.1'
+          - 'gpt-4o-mini'
+        fetch: false
+      modelDisplayLabel: OpenAI
+
+    - name: Claude
+      provider: anthropic
+      apiKey: '${ANTHROPIC_API_KEY}'
+      baseURL: 'https://api.anthropic.com'
+      models:
+        default:
+          - 'claude-sonnet-4-5'
+          - 'claude-haiku-4-5'
+        fetch: false
+      modelDisplayLabel: Claude
+
+    - name: OpenRouter
       apiKey: '${OPENROUTER_KEY}'
       baseURL: 'https://openrouter.ai/api/v1'
+      headers:
+        x-librechat-body-parentmessageid: '{{LIBRECHAT_BODY_PARENTMESSAGEID}}'
       models:
         default:
           - 'moonshotai/kimi-k2.6'
-          - 'google/gemini-3.1-flash-image'   # "Nano Banana 2"; returns images as well as text
-        fetch: false            # pin models; fetch:true lists hundreds and confuses novices
+          - 'google/gemini-3.1-flash-image'
+        fetch: false
       titleConvo: true
-      titleModel: 'moonshotai/kimi-k2.6'
       dropParams: ['stop']
       modelDisplayLabel: 'OpenRouter'
 
-    - name: 'NVIDIA'
+    - name: NVIDIA
       apiKey: '${NVIDIA_API_KEY}'
       baseURL: 'https://integrate.api.nvidia.com/v1'
       models:
-        default: ['z-ai/glm-5.2']
+        default:
+          - 'z-ai/glm-5.2'
         fetch: false
       titleConvo: true
-      titleModel: 'z-ai/glm-5.2'
-      addParams:
-        # camelCase is required — an unrecognised `max_tokens` is passed through as a
-        # raw model kwarg instead of setting the limit. Temperature and top_p are left
-        # out deliberately: the UI already defaults both to 1, and listing them here
-        # would pin the sliders rather than seed them.
-        maxTokens: 16384
       dropParams: ['stop']
       modelDisplayLabel: 'NVIDIA'
+

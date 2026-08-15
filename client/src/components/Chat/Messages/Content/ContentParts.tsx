@@ -16,6 +16,7 @@ import { MessageContext, SearchContext } from '~/Providers';
 import PendingSkillCall from './Parts/PendingSkillCall';
 import ActivityPhaseGroup from './ActivityPhaseGroup';
 import ApprovalProvider from './ApprovalContext';
+import GeneratedImageArtifacts from './GeneratedImageArtifacts';
 import MemoryArtifacts from './MemoryArtifacts';
 import Sources from '~/components/Web/Sources';
 import ToolCallGroup from './ToolCallGroup';
@@ -493,6 +494,7 @@ const ContentParts = memo(function ContentParts({
       <ApprovalProvider>
         <SearchContext.Provider value={{ searchResults }}>
           <MemoryArtifacts attachments={attachments} />
+          <GeneratedImageArtifacts attachments={attachments} />
           {hasParallelContent && (
             <Sources messageId={messageId} conversationId={conversationId || undefined} />
           )}
@@ -569,6 +571,7 @@ const ContentParts = memo(function ContentParts({
   const sequentialContent = (
     <SearchContext.Provider value={{ searchResults }}>
       {!nestedActivityPhase && <MemoryArtifacts attachments={attachments} />}
+      {!nestedActivityPhase && <GeneratedImageArtifacts attachments={attachments} />}
       {!nestedActivityPhase && renderPendingSkills()}
       {showEmptyCursor && (
         <Container>

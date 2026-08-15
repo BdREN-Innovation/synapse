@@ -54,14 +54,75 @@ class ModelEndHandler {
    *   a no-op for them even when the map is provided.
    * @param {(data: Record<string, unknown>) => Promise<void> | void} [emitUsage] Optional
    *   callback to stream per-call token usage to the client.
+   * @param {Object} [imageDeps] Dependencies for persisting inline model-generated images
+   *   (e.g. OpenRouter's `message.images` extension for Gemini image models), which arrive
+   *   directly on the chat completion rather than through a tool call.
+   * @param {Express.Request} [imageDeps.req]
+   * @param {ServerResponse} [imageDeps.res]
+   * @param {string | null} [imageDeps.streamId]
+   * @param {number} [imageDeps.jobCreatedAt]
+   * @param {Array<Promise>} [imageDeps.artifactPromises]
    */
-  constructor(collectedUsage, collectedThoughtSignatures = null, emitUsage = null) {
+  constructor(collectedUsage, collectedThoughtSignatures = null, emitUsage = null, imageDeps = {}) {
     if (!Array.isArray(collectedUsage)) {
       throw new Error('collectedUsage must be an array');
     }
     this.collectedUsage = collectedUsage;
     this.collectedThoughtSignatures = collectedThoughtSignatures;
     this.emitUsage = emitUsage;
+    this.req = imageDeps.req ?? null;
+    this.res = imageDeps.res ?? null;
+    this.streamId = imageDeps.streamId ?? null;
+    this.jobCreatedAt = imageDeps.jobCreatedAt;
+    this.artifactPromises = imageDeps.artifactPromises ?? null;
+  }
+
+  /**
+   * Persists images returned inline on the model's chat completion (not via a tool call) —
+   * e.g. OpenRouter's `message.images` extension for `google/gemini-*-image` models. LangChain's
+   * streaming delta converter doesn't read that field at all, so `patches/@langchain+openai+*.patch`
+   * copies it onto `additional_kwargs.images` on the final aggregated AIMessage; this is where that
+   * patched-through data actually gets turned into a saved, renderable attachment.
+   * @param {ModelEndData['output']} output
+   * @param {Record<string, unknown>} metadata
+   */
+  handleInlineImages(output, metadata) {
+    const images = output?.additional_kwargs?.images;
+    if (!Array.isArray(images) || images.length === 0 || !this.artifactPromises || !this.res) {
+      return;
+    }
+    for (const image of images) {
+      const url = image?.image_url?.url;
+      if (typeof url !== 'string' || !url.startsWith('data:')) {
+        continue;
+      }
+      this.artifactPromises.push(
+        (async () => {
+          const filename = `generated_img_${nanoid()}`;
+          const file = await saveBase64Image(url, {
+            req: this.req,
+            filename,
+            endpoint: metadata.provider,
+            context: FileContext.image_generation,
+          });
+          const fileMetadata = Object.assign(file, {
+            messageId: metadata.run_id,
+            conversationId: metadata.thread_id,
+          });
+          if (!this.streamId && !this.res.headersSent) {
+            return fileMetadata;
+          }
+          if (!fileMetadata) {
+            return null;
+          }
+          writeAttachment(this.res, this.streamId, fileMetadata, this.jobCreatedAt);
+          return fileMetadata;
+        })().catch((error) => {
+          logger.error('[ModelEndHandler] Error persisting inline model-generated image:', error);
+          return null;
+        }),
+      );
+    }
   }
 
   finalize(errorMessage) {
@@ -101,6 +162,8 @@ class ModelEndHandler {
           conversationId: metadata.thread_id,
         });
       }
+
+      this.handleInlineImages(data?.output, metadata);
 
       const usage = data?.output?.usage_metadata;
       if (!usage) {
@@ -335,6 +398,7 @@ function feedSubagentAggregator(aggregator, event) {
  * @throws {Error} If the request is not found.
  */
 function getDefaultHandlers({
+  req = null,
   res,
   aggregateContent,
   contentParts = null,
@@ -345,6 +409,7 @@ function getDefaultHandlers({
   collectedThoughtSignatures = null,
   streamId = null,
   jobCreatedAt,
+  artifactPromises = null,
   toolExecuteOptions = null,
   summarizationOptions = null,
   subagentAggregatorsByToolCallId = null,
@@ -395,6 +460,7 @@ function getDefaultHandlers({
       collectedUsage,
       collectedThoughtSignatures,
       emitTokenUsage,
+      { req, res, streamId, jobCreatedAt, artifactPromises },
     ),
     [GraphEvents.TOOL_END]: new ToolEndHandler(toolEndCallback, logger),
     [GraphEvents.ON_RUN_STEP]: {

@@ -362,6 +362,7 @@ const initializeClient = async ({
   const usageEmitSink = [];
 
   const eventHandlers = getDefaultHandlers({
+    req,
     res,
     contentParts,
     stepMap,
@@ -374,6 +375,7 @@ const initializeClient = async ({
     collectedThoughtSignatures,
     streamId,
     jobCreatedAt,
+    artifactPromises,
     subagentAggregatorsByToolCallId,
     usageCost,
     contextUsageSink,
