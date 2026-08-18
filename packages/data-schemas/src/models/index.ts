@@ -20,6 +20,7 @@ import { createAclEntryModel } from './aclEntry';
 import { createAuditLogModel } from './auditLog';
 import { createSessionModel } from './session';
 import { createBalanceModel } from './balance';
+import { createCreditGrantModel } from './creditGrant';
 import { createMessageModel } from './message';
 import { createActionModel } from './action';
 import { createBannerModel } from './banner';
@@ -31,6 +32,7 @@ import { createInstitutionImportJobModel } from './institutionImportJob';
 import { createTokenModel } from './token';
 import { createAgentModel } from './agent';
 import { createInstitutionInviteModel } from './institutionInvite';
+import { createInstitutionPackageModel } from './institutionPackage';
 import { createSkillModel } from './skill';
 import { createGroupModel } from './group';
 import { createInstitutionModel } from './institution';
@@ -54,6 +56,7 @@ export function createModels(mongoose: typeof import('mongoose')): {
   Token: ReturnType<typeof createTokenModel>;
   Session: ReturnType<typeof createSessionModel>;
   Balance: ReturnType<typeof createBalanceModel>;
+  CreditGrant: ReturnType<typeof createCreditGrantModel>;
   Conversation: ReturnType<typeof createConversationModel>;
   ChatProject: ReturnType<typeof createChatProjectModel>;
   Message: ReturnType<typeof createMessageModel>;
@@ -90,6 +93,7 @@ export function createModels(mongoose: typeof import('mongoose')): {
   Institution: ReturnType<typeof createInstitutionModel>;
   InstitutionImportJob: ReturnType<typeof createInstitutionImportJobModel>;
   InstitutionInvite: ReturnType<typeof createInstitutionInviteModel>;
+  InstitutionPackage: ReturnType<typeof createInstitutionPackageModel>;
   PlatformAdmin: ReturnType<typeof createPlatformAdminModel>;
   UsagePolicy: ReturnType<typeof createUsagePolicyModel>;
   UsageBucket: ReturnType<typeof createUsageBucketModel>;
@@ -102,6 +106,7 @@ export function createModels(mongoose: typeof import('mongoose')): {
     Token: createTokenModel(mongoose),
     Session: createSessionModel(mongoose),
     Balance: createBalanceModel(mongoose),
+    CreditGrant: createCreditGrantModel(mongoose),
     Conversation: createConversationModel(mongoose),
     ChatProject: createChatProjectModel(mongoose),
     Message: createMessageModel(mongoose),
@@ -138,6 +143,7 @@ export function createModels(mongoose: typeof import('mongoose')): {
     Institution: createInstitutionModel(mongoose),
     InstitutionImportJob: createInstitutionImportJobModel(mongoose),
     InstitutionInvite: createInstitutionInviteModel(mongoose),
+    InstitutionPackage: createInstitutionPackageModel(mongoose),
     PlatformAdmin: createPlatformAdminModel(mongoose),
     UsagePolicy: createUsagePolicyModel(mongoose),
     UsageBucket: createUsageBucketModel(mongoose),

@@ -10,6 +10,19 @@ export interface IInstitution extends Document {
   authDomains?: string[];
   timezone?: string;
   usagePolicyVersion?: number;
+  packageAssignment?: {
+    packageId: string;
+    packageSnapshot: {
+      name: string;
+      description?: string;
+      price: number;
+      currency: string;
+      monthlyTokenLimit: number;
+    };
+    monthlyTokenLimit: number;
+    assignedAt: Date;
+    assignedBy?: Types.ObjectId | string;
+  } | null;
   limits?: {
     maxActiveMembers?: number | null;
   };

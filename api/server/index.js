@@ -328,9 +328,11 @@ const startServer = async () => {
   app.use('/api/admin/skills', routes.adminSkills);
   app.use('/api/admin/usage', routes.adminUsage);
   app.use('/api/admin/users', routes.adminUsers);
+  app.use('/api/admin/billing', routes.adminBilling);
   app.use('/api/admin/audit-log', routes.adminAuditLog);
   app.use('/api/platform/institutions', routes.platformInstitutions);
   app.use('/api/platform/users', routes.platformUsers);
+  app.use('/api/platform/institution-packages', routes.platformInstitutionPackages);
   app.use('/api/actions', routes.actions);
   app.use('/api/keys', routes.keys);
   app.use('/api/api-keys', routes.apiKeys);

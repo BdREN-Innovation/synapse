@@ -5,6 +5,43 @@ version: 1.3.13
 
 cache: true
 
+# Prevents old large tool results (e.g. full document dumps from execute_code,
+# OCR'd PDF text, or `context`-attached files) from compounding token cost on
+# every subsequent turn of a long editing session.
+summarization:
+  enabled: true
+  contextPruning:
+    enabled: true
+    keepLastAssistants: 3
+    softTrimRatio: 0.7
+    hardClearRatio: 0.9
+    minPrunableToolChars: 2000
+
+balance:
+  enabled: true
+  startBalance: 0
+  autoRefillEnabled: false
+
+creditPackages:
+  currency: BDT
+  list:
+    - id: waiver
+      label: Waived / Complimentary
+      price: 0
+      credits: 1000000
+    - id: starter
+      label: Starter
+      price: 500
+      credits: 10000
+    - id: standard
+      label: Standard
+      price: 2000
+      credits: 25000000
+    - id: premium
+      label: Premium
+      price: 5000
+      credits: 75000000
+
 interface:
   customWelcome: 'Welcome to BdREN Synapse!'
   fileSearch: true
@@ -31,6 +68,14 @@ modelSpecs:
   enforce: true
   prioritize: true
   list:
+    - name: glm-4.6v
+      label: BdREN AI (GLM 4.6V)
+      askUserQuestion: true
+      group: BdREN AI
+      preset:
+        endpoint: BdREN AI
+        model: glm-4.6v
+
     - name: office-assistant
       label: Office Assistant
       description: General office assistant with document, spreadsheet, presentation, mail, and image delegation.
@@ -98,6 +143,10 @@ modelSpecs:
       preset:
         endpoint: Claude
         model: claude-sonnet-4-5
+        # Cache reads run ~10x cheaper than fresh input (tx.ts cacheTokenValues) —
+        # worth enabling by default since document-editing sessions repeatedly
+        # resend large, mostly-unchanged file/context content across turns.
+        promptCache: true
 
     - name: claude-haiku-4-5
       label: Claude Haiku 4.5
@@ -105,6 +154,7 @@ modelSpecs:
       preset:
         endpoint: Claude
         model: claude-haiku-4-5
+        promptCache: true
         promptPrefix: |
           You assist non-technical office users with emails, letters, reports,
           research, document editing, meeting materials, and presentations.
@@ -140,7 +190,12 @@ modelSpecs:
 
 endpoints:
   agents:
-    allowedProviders: ['OpenAI', 'Claude', 'OpenRouter', 'OpenRouter Image', 'anthropic']
+    allowedProviders: ['OpenAI', 'Claude', 'BdREN AI', 'OpenRouter', 'OpenRouter Image', 'anthropic']
+    # Bounds how much text from a single tool result (e.g. execute_code stdout,
+    # OCR'd document text) gets inserted into the conversation per call — without
+    # this, a large-document read/edit can dump tens of thousands of characters
+    # into context on one turn.
+    maxToolResultChars: 100000
     capabilities:
       - 'subagents'
       - 'execute_code'
@@ -155,21 +210,29 @@ endpoints:
   anthropic:
     apiKey: '${ANTHROPIC_API_KEY}'
     models:
-      - 'claude-opus-4-1-20250805'
-      - 'claude-sonnet-4-20250514'
-      - 'claude-3-5-haiku-20241022'
+        - 'claude-sonnet-4-5'
+        - 'claude-haiku-4-5'
     titleConvo: true
-    titleModel: 'claude-3-5-haiku-20241022'
+    titleModel: 'claude-haiku-4-5'
 
   custom:
+    - name: BdREN AI
+      apiKey: '${BDREN_AI_API_KEY}'
+      baseURL: 'https://llm.shuvoo.com/v1'
+      models:
+        default:
+          - 'glm-4.6v'
+        fetch: false
+      titleConvo: true
+      titleModel: 'glm-4.6v'
+      modelDisplayLabel: 'BdREN AI'
+
     - name: OpenAI
       apiKey: '${OPENAI_API_KEY}'
       baseURL: 'https://api.openai.com/v1'
       models:
         default:
           - 'gpt-5.6-luna'
-          - 'gpt-4.1'
-          - 'gpt-4o-mini'
         fetch: false
       modelDisplayLabel: OpenAI
 
@@ -223,6 +286,7 @@ endpoints:
       addParams:
         modalities: ['image']
         image_config:
+          resolution: '512'
           aspect_ratio: '16:9'
 
     - name: NVIDIA
@@ -235,5 +299,3 @@ endpoints:
       titleConvo: true
       dropParams: ['stop']
       modelDisplayLabel: 'NVIDIA'
-
-

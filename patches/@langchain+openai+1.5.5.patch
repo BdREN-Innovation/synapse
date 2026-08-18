@@ -1,8 +1,16 @@
 diff --git a/node_modules/@langchain/openai/dist/converters/completions.cjs b/node_modules/@langchain/openai/dist/converters/completions.cjs
-index e6953a9..3ec2d18 100644
+index e6953a9..3721e7e 100644
 --- a/node_modules/@langchain/openai/dist/converters/completions.cjs
 +++ b/node_modules/@langchain/openai/dist/converters/completions.cjs
-@@ -266,6 +266,7 @@ const convertCompletionsDeltaToBaseMessageChunk = ({ delta, rawResponse, include
+@@ -182,6 +182,7 @@ const convertCompletionsMessageToBaseMessage = ({ message, rawResponse, includeR
+ 				} : {}
+ 			};
+ 			if (message.audio) additional_kwargs.audio = message.audio;
++			if (Array.isArray(message.images)) additional_kwargs.images = message.images;
+ 			return new _langchain_core_messages.AIMessage({
+ 				content: require_output.handleMultiModalOutput(message.content || "", rawResponse.choices?.[0]?.message),
+ 				tool_calls: toolCalls,
+@@ -266,6 +267,7 @@ const convertCompletionsDeltaToBaseMessageChunk = ({ delta, rawResponse, include
  		...delta.audio,
  		index: rawResponse.choices[0].index
  	};
@@ -11,10 +19,18 @@ index e6953a9..3ec2d18 100644
  		model_provider: "openai",
  		usage: { ...rawResponse.usage }
 diff --git a/node_modules/@langchain/openai/dist/converters/completions.js b/node_modules/@langchain/openai/dist/converters/completions.js
-index 10fa07a..de8202b 100644
+index 10fa07a..8fca778 100644
 --- a/node_modules/@langchain/openai/dist/converters/completions.js
 +++ b/node_modules/@langchain/openai/dist/converters/completions.js
-@@ -266,6 +266,7 @@ const convertCompletionsDeltaToBaseMessageChunk = ({ delta, rawResponse, include
+@@ -182,6 +182,7 @@ const convertCompletionsMessageToBaseMessage = ({ message, rawResponse, includeR
+ 				} : {}
+ 			};
+ 			if (message.audio) additional_kwargs.audio = message.audio;
++			if (Array.isArray(message.images)) additional_kwargs.images = message.images;
+ 			return new AIMessage({
+ 				content: handleMultiModalOutput(message.content || "", rawResponse.choices?.[0]?.message),
+ 				tool_calls: toolCalls,
+@@ -266,6 +267,7 @@ const convertCompletionsDeltaToBaseMessageChunk = ({ delta, rawResponse, include
  		...delta.audio,
  		index: rawResponse.choices[0].index
  	};

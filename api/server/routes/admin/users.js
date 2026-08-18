@@ -20,6 +20,7 @@ const {
   setInstitutionRole,
   suspendInstitutionMember,
 } = require('~/server/services/institutionMembers');
+const { getMemberUsageSummary } = require('~/server/services/institutionUsage');
 
 const router = express.Router();
 
@@ -137,6 +138,7 @@ router.post('/invite', requireManageUsers, async (req, res) => {
       email: req.body?.email,
       name: req.body?.name,
       requestedRole: req.body?.role,
+      creditPackageId: req.body?.creditPackageId,
       invitedBy: req.user,
       context: buildAuditContext(req),
     });
@@ -258,6 +260,26 @@ router.get('/:id', requireReadUsers, async (req, res) => {
     return res.status(200).json({ member: detail });
   } catch (error) {
     return handleError(res, error, 'Failed to load member details');
+  }
+});
+
+router.get('/:id/usage', requireReadUsers, async (req, res) => {
+  const tenantId = requireTenant(req, res);
+  if (!tenantId) {
+    return;
+  }
+
+  try {
+    await getInstitutionMemberDetail({ tenantId, id: req.params.id, kind: 'user' });
+    const result = await getMemberUsageSummary({
+      tenantId,
+      userId: req.params.id,
+      start: req.query.start,
+      end: req.query.end,
+    });
+    return res.status(200).json(result);
+  } catch (error) {
+    return handleError(res, error, 'Failed to load user usage');
   }
 });
 

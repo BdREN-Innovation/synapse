@@ -1,5 +1,6 @@
 import { Schema } from 'mongoose';
 import {
+  InstitutionInviteAccountScopes,
   InstitutionInviteSources,
   InstitutionInviteStatuses,
 } from '~/common';
@@ -9,8 +10,16 @@ const institutionInviteSchema: Schema<IInstitutionInvite> = new Schema<IInstitut
   {
     tenantId: {
       type: String,
-      required: true,
+      required: function requiredTenantForInstitutionInvite(this: { accountScope?: string }) {
+        return this.accountScope !== InstitutionInviteAccountScopes.STANDALONE;
+      },
       trim: true,
+      index: true,
+    },
+    accountScope: {
+      type: String,
+      enum: Object.values(InstitutionInviteAccountScopes),
+      default: InstitutionInviteAccountScopes.INSTITUTION,
       index: true,
     },
     email: {
@@ -25,9 +34,20 @@ const institutionInviteSchema: Schema<IInstitutionInvite> = new Schema<IInstitut
       trim: true,
       default: '',
     },
+    requestedUsername: {
+      type: String,
+      trim: true,
+      lowercase: true,
+      default: null,
+    },
     requestedRole: {
       type: String,
       required: true,
+      trim: true,
+    },
+    creditPackageId: {
+      type: String,
+      default: null,
       trim: true,
     },
     status: {
@@ -82,6 +102,7 @@ const institutionInviteSchema: Schema<IInstitutionInvite> = new Schema<IInstitut
 );
 
 institutionInviteSchema.index({ tenantId: 1, email: 1, status: 1 });
+institutionInviteSchema.index({ accountScope: 1, email: 1, status: 1 });
 institutionInviteSchema.index({ tenantId: 1, createdAt: -1 });
 
 export default institutionInviteSchema;

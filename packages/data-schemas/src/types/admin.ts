@@ -45,6 +45,20 @@ export type AdminConfigDeleteResponse = {
   success: boolean;
 };
 
+export type AdminUserRecord = {
+  id: string;
+  accountScope: 'institution' | 'standalone';
+  tenantId?: string;
+  institutionName: string;
+  kind: 'user' | 'invite';
+  name: string;
+  email: string;
+  role: string;
+  status: string;
+  createdAt?: string;
+  updatedAt?: string;
+};
+
 /* ── Audit log taxonomy ─────────────────────────────────────────────── */
 
 /**
@@ -78,6 +92,7 @@ export const AUDIT_ACTIONS = [
   'grant.assigned',
   'grant.removed',
   'member.invited',
+  'member.credits_granted',
   'member.invite_resent',
   'member.invite_revoked',
   'member.suspended',
@@ -93,6 +108,7 @@ export const AUDIT_ACTIONS = [
   'institution.updated',
   'institution.suspended',
   'institution.reactivated',
+  'institution.closed',
   'institution.seat_limit_changed',
   'institution.seat_limit_rejected',
   'institution.admin_appointed',
@@ -108,6 +124,7 @@ export const AUDIT_ACTION_CATEGORY: Record<AuditAction, AuditCategory> = {
   'grant.assigned': 'grant',
   'grant.removed': 'grant',
   'member.invited': 'member',
+  'member.credits_granted': 'member',
   'member.invite_resent': 'member',
   'member.invite_revoked': 'member',
   'member.suspended': 'member',
@@ -123,6 +140,7 @@ export const AUDIT_ACTION_CATEGORY: Record<AuditAction, AuditCategory> = {
   'institution.updated': 'institution',
   'institution.suspended': 'institution',
   'institution.reactivated': 'institution',
+  'institution.closed': 'institution',
   'institution.seat_limit_changed': 'institution',
   'institution.seat_limit_rejected': 'institution',
   'institution.admin_appointed': 'institution',

@@ -11,6 +11,7 @@ const {
   tenantStorage,
   InstitutionInviteStatuses,
   InstitutionInviteSources,
+  InstitutionInviteAccountScopes,
   InstitutionMembershipStatuses,
   InstitutionImportJobStatuses,
   INSTITUTION_ADMIN_ROLE,
@@ -20,6 +21,7 @@ const models = require('~/db/models');
 const { sendEmail } = require('~/server/utils');
 const { isPlatformAdminEmail } = require('./platformAdmin');
 const { appointInstitutionAdmin, revokeInstitutionAdmin } = require('./tenancy');
+const { getAppConfig } = require('./Config');
 
 const INVITE_EXPIRY_MS = 1000 * 60 * 60 * 24 * 7;
 const MAX_IMPORT_ROWS = 1000;
@@ -39,6 +41,22 @@ function normalizeEmail(email) {
   return String(email || '')
     .trim()
     .toLowerCase();
+}
+
+function getCreditPackages(appConfig) {
+  return appConfig?.creditPackages ?? appConfig?.config?.creditPackages ?? { currency: 'BDT', list: [] };
+}
+
+const usernameAllowedCharactersRegex = /^[a-zA-Z0-9_.@#$%&*()\p{Script=Latin}\p{Script=Common}\p{Script=Cyrillic}\p{Script=Devanagari}\p{Script=Han}\p{Script=Arabic}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}]+$/u;
+const usernameInjectionRegex = /('|--|\$ne|\$gt|\$lt|\$or|\{|\}|\*|;|<|>|\/|=)/i;
+
+function normalizeUsername(username) {
+  const value = String(username || '').trim();
+  if (!value) return null;
+  if (value.length < 2 || value.length > 80 || !usernameAllowedCharactersRegex.test(value) || usernameInjectionRegex.test(value)) {
+    throw new HttpError(400, 'Invalid username');
+  }
+  return value.toLowerCase();
 }
 
 function normalizeRole(role) {
@@ -403,6 +421,44 @@ async function suspendMemberWithoutTransaction(tenantId, userId, actorId) {
   return await models.User.findOne({ _id: userId, tenantId }).lean().exec();
 }
 
+async function deleteUserAccountData(user) {
+  const userId = user._id.toString();
+  const deleteTasks = [
+    models.Action.deleteMany({ user: user._id }).exec(),
+    models.Agent.deleteMany({ author: user._id }).exec(),
+    models.AgentApiKey.deleteMany({ user: user._id }).exec(),
+    models.Assistant.deleteMany({ user: user._id }).exec(),
+    models.Balance.deleteMany({ user: user._id }).exec(),
+    models.ConversationTag.deleteMany({ user: user._id }).exec(),
+    models.Conversation.deleteMany({ user: user._id }).exec(),
+    models.Message.deleteMany({ user: user._id }).exec(),
+    models.File.deleteMany({ user: user._id }).exec(),
+    models.Key.deleteMany({ userId }).exec(),
+    models.MemoryEntry.deleteMany({ userId }).exec(),
+    models.PluginAuth.deleteMany({ userId }).exec(),
+    models.Prompt.deleteMany({ author: user._id }).exec(),
+    models.PromptGroup.deleteMany({ author: user._id }).exec(),
+    models.Preset.deleteMany({ user: user._id }).exec(),
+    models.Session.deleteMany({ user: user._id }).exec(),
+    models.SharedLink.deleteMany({ user: user._id }).exec(),
+    models.ToolCall.deleteMany({ user: user._id }).exec(),
+    models.Token.deleteMany({ userId }).exec(),
+    models.Transaction.deleteMany({ user: user._id }).exec(),
+    models.CreditGrant.deleteMany({ user: user._id }).exec(),
+    models.AclEntry.deleteMany({ principalId: user._id }).exec(),
+    models.InstitutionInvite.deleteMany({
+      $or: [{ email: user.email }, { acceptedUserId: user._id }],
+    }).exec(),
+    runAsSystem(() => db.deleteUserById(userId)),
+  ];
+
+  await Promise.all(deleteTasks);
+  await models.Group.updateMany(
+    { memberIds: user._id },
+    { $pull: { memberIds: user._id } },
+  ).exec();
+}
+
 async function removeMemberWithoutTransaction(tenantId, userId, actorId) {
   const user = await models.User.findOne({ _id: userId, tenantId }).lean().exec();
   if (!user) {
@@ -411,61 +467,107 @@ async function removeMemberWithoutTransaction(tenantId, userId, actorId) {
   if (user.role === SystemRoles.ADMIN) {
     throw new HttpError(403, 'Platform admins cannot be removed from tenant flows');
   }
-  if (user.membershipStatus === InstitutionMembershipStatuses.REMOVED) {
+  const wasActive = isActiveStatus(user.membershipStatus);
+  await deleteUserAccountData(user);
+  if (wasActive) {
+    await releaseActiveSeat(tenantId);
+  }
+  return { ...user, membershipStatus: InstitutionMembershipStatuses.REMOVED };
+}
+
+async function findStandaloneUser(userId) {
+  const user = await runAsSystem(() => models.User.findById(userId).lean().exec());
+  if (!user) {
+    return null;
+  }
+  if (!user.tenantId || user.tenantId === '') {
     return user;
   }
+  const institution = await runAsSystem(() =>
+    models.Institution.findOne({ tenantId: user.tenantId }).select('_id').lean().exec(),
+  );
+  return institution ? null : user;
+}
 
-  const wasActive = isActiveStatus(user.membershipStatus);
-  const removedAt = new Date();
-  const removed = await models.User.findOneAndUpdate(
-    {
-      _id: userId,
-      tenantId,
-      membershipStatus: user.membershipStatus,
-    },
-    {
-      $set: {
-        membershipStatus: InstitutionMembershipStatuses.REMOVED,
-        removedAt,
-        removedBy: toObjectId(actorId),
+async function suspendStandaloneMember({ userId, actor, context }) {
+  const user = await findStandaloneUser(userId);
+  if (!user) {
+    throw new HttpError(404, 'Standalone user not found');
+  }
+  if (user.role === SystemRoles.ADMIN) {
+    throw new HttpError(403, 'Platform admins cannot be suspended');
+  }
+  if (user.membershipStatus === InstitutionMembershipStatuses.REMOVED) {
+    throw new HttpError(409, 'Removed users cannot be suspended');
+  }
+  if (user.membershipStatus !== InstitutionMembershipStatuses.SUSPENDED) {
+    await runAsSystem(() =>
+      db.updateUser(userId, {
+        membershipStatus: InstitutionMembershipStatuses.SUSPENDED,
+        suspendedAt: new Date(),
+        suspendedBy: toObjectId(actor?.id ?? actor?._id),
+      }),
+    );
+  }
+  const result = await runAsSystem(() => models.User.findById(userId).lean().exec());
+  await recordMemberAudit({
+    tenantId: undefined,
+    action: 'member.suspended',
+    actor: actorFromUser(actor),
+    target: { type: 'user', id: userId, name: user.email },
+    context,
+  });
+  return result;
+}
+
+async function reactivateStandaloneMember({ userId, actor, context }) {
+  const user = await findStandaloneUser(userId);
+  if (!user) {
+    throw new HttpError(404, 'Standalone user not found');
+  }
+  if (user.role === SystemRoles.ADMIN) {
+    throw new HttpError(403, 'Platform admins cannot be reactivated');
+  }
+  if (user.membershipStatus === InstitutionMembershipStatuses.REMOVED) {
+    throw new HttpError(409, 'Removed users cannot be reactivated');
+  }
+  if (user.membershipStatus === InstitutionMembershipStatuses.SUSPENDED) {
+    await runAsSystem(() =>
+      db.updateUser(userId, {
+        membershipStatus: InstitutionMembershipStatuses.ACTIVE,
         suspendedAt: null,
         suspendedBy: null,
-        role: SystemRoles.USER,
-      },
-    },
-    { new: true },
-  )
-    .lean()
-    .exec();
+      }),
+    );
+  }
+  const result = await runAsSystem(() => models.User.findById(userId).lean().exec());
+  await recordMemberAudit({
+    tenantId: undefined,
+    action: 'member.reactivated',
+    actor: actorFromUser(actor),
+    target: { type: 'user', id: userId, name: user.email },
+    context,
+  });
+  return result;
+}
 
-  if (!removed) {
-    throw new HttpError(409, 'Member state changed; please try again');
+async function removeStandaloneMember({ userId, actor, context }) {
+  const user = await findStandaloneUser(userId);
+  if (!user) {
+    throw new HttpError(404, 'Standalone user not found');
   }
-  if (!wasActive) {
-    return removed;
+  if (user.role === SystemRoles.ADMIN) {
+    throw new HttpError(403, 'Platform admins cannot be removed');
   }
-
-  try {
-    await releaseActiveSeat(tenantId);
-  } catch (error) {
-    await models.User.updateOne(
-      {
-        _id: userId,
-        tenantId,
-        membershipStatus: InstitutionMembershipStatuses.REMOVED,
-        removedAt,
-      },
-      {
-        $set: {
-          membershipStatus: InstitutionMembershipStatuses.ACTIVE,
-          role: user.role,
-        },
-        $unset: { removedAt: 1, removedBy: 1 },
-      },
-    ).exec();
-    throw error;
-  }
-  return removed;
+  await deleteUserAccountData(user);
+  await recordMemberAudit({
+    tenantId: undefined,
+    action: 'member.removed',
+    actor: actorFromUser(actor),
+    target: { type: 'user', id: userId, name: user.email },
+    context,
+  });
+  return { ...user, membershipStatus: InstitutionMembershipStatuses.REMOVED };
 }
 
 function isActiveStatus(status) {
@@ -482,6 +584,7 @@ function mapUserMember(user) {
     kind: 'user',
     tenantId: user.tenantId,
     name: user.name ?? '',
+    username: user.username ?? null,
     email: user.email ?? '',
     emailVerified: user.emailVerified === true,
     role: mapRequestedRole(user.role),
@@ -500,6 +603,7 @@ function mapInviteMember(invite) {
     kind: 'invite',
     tenantId: invite.tenantId,
     name: invite.name ?? '',
+    username: invite.requestedUsername ?? null,
     email: invite.email ?? '',
     role: mapRequestedRole(invite.requestedRole),
     status:
@@ -598,6 +702,7 @@ async function createInstitutionInvite({
   email,
   name,
   requestedRole,
+  creditPackageId,
   invitedBy,
   source = InstitutionInviteSources.MANUAL,
   context,
@@ -610,6 +715,13 @@ async function createInstitutionInvite({
   const role = normalizeRole(requestedRole);
   if (!ALLOWED_MEMBER_ROLES.has(role)) {
     throw new HttpError(400, 'Invalid institution role');
+  }
+
+  if (creditPackageId) {
+    const appConfig = await getAppConfig({ tenantId });
+    if (!getCreditPackages(appConfig).list.some((item) => item.id === creditPackageId)) {
+      throw new HttpError(400, 'Invalid credit package');
+    }
   }
 
   if (await isPlatformAdminEmail(normalizedEmail)) {
@@ -649,6 +761,7 @@ async function createInstitutionInvite({
       email: normalizedEmail,
       name: String(name || '').trim(),
       requestedRole: role,
+      creditPackageId: creditPackageId || null,
       status: InstitutionInviteStatuses.PENDING,
       tokenHash,
       invitedBy: toObjectId(invitedBy?.id ?? invitedBy?._id ?? invitedBy),
@@ -674,6 +787,28 @@ async function createInstitutionInvite({
     context,
   });
 
+  return { invite, ...emailResult };
+}
+
+async function createStandaloneInvite({ email, username, creditPackageId, invitedBy, context }) {
+  const normalizedEmail = normalizeEmail(email);
+  if (!normalizedEmail) throw new HttpError(400, 'Email is required');
+  if (!creditPackageId) throw new HttpError(400, 'A package is required');
+  const requestedUsername = normalizeUsername(username);
+  if (await isPlatformAdminEmail(normalizedEmail)) throw new HttpError(409, 'This email address cannot be invited');
+  const existingUser = await runAsSystem(() => models.User.findOne({ email: normalizedEmail }).select('_id tenantId').lean().exec());
+  if (existingUser) throw new HttpError(409, 'This email is already attached to an account');
+  const existingInvite = await runAsSystem(() => models.InstitutionInvite.findOne({ accountScope: InstitutionInviteAccountScopes.STANDALONE, email: normalizedEmail, status: InstitutionInviteStatuses.PENDING }).lean().exec());
+  if (existingInvite) throw new HttpError(409, 'A pending invitation already exists for this email');
+  const appConfig = await getAppConfig({ baseOnly: true });
+  const pkg = getCreditPackages(appConfig).list.find((item) => item.id === creditPackageId);
+  if (!pkg) throw new HttpError(400, 'Invalid credit package');
+  const rawToken = await getRandomValues(32);
+  const tokenHash = await hashToken(rawToken);
+  const name = requestedUsername || normalizedEmail.split('@')[0];
+  const invite = await runAsSystem(() => models.InstitutionInvite.create({ accountScope: InstitutionInviteAccountScopes.STANDALONE, tenantId: null, email: normalizedEmail, name, requestedUsername, requestedRole: SystemRoles.USER, creditPackageId: pkg.id, status: InstitutionInviteStatuses.PENDING, tokenHash, invitedBy: toObjectId(invitedBy?.id ?? invitedBy?._id ?? invitedBy), lastSentAt: new Date(), expiresAt: new Date(Date.now() + INVITE_EXPIRY_MS), source: InstitutionInviteSources.MANUAL }));
+  const emailResult = await sendInstitutionInviteEmail({ email: normalizedEmail, token: rawToken, appName: process.env.APP_TITLE || 'LibreChat', name: invite.name });
+  await recordMemberAudit({ tenantId: undefined, action: 'member.invited', actor: actorFromUser(invitedBy), target: { type: 'standalone_invite', id: invite._id, name: normalizedEmail }, metadata: { accountScope: InstitutionInviteAccountScopes.STANDALONE, packageId: pkg.id }, context });
   return { invite, ...emailResult };
 }
 
@@ -714,6 +849,27 @@ async function resendInstitutionInvite({ tenantId, inviteId, actor, context }) {
   });
 
   return { invite, ...emailResult };
+}
+
+async function resendStandaloneInvite({ inviteId, actor, context }) {
+  const invite = await runAsSystem(() => models.InstitutionInvite.findOne({ _id: inviteId, accountScope: InstitutionInviteAccountScopes.STANDALONE, status: { $in: [InstitutionInviteStatuses.PENDING, InstitutionInviteStatuses.EXPIRED] } }).exec());
+  if (!invite) throw new HttpError(404, 'Pending or expired invitation not found');
+  const rawToken = await getRandomValues(32);
+  invite.tokenHash = await hashToken(rawToken);
+  invite.status = InstitutionInviteStatuses.PENDING;
+  invite.lastSentAt = new Date();
+  invite.expiresAt = new Date(Date.now() + INVITE_EXPIRY_MS);
+  await invite.save();
+  const emailResult = await sendInstitutionInviteEmail({ email: invite.email, token: rawToken, appName: process.env.APP_TITLE || 'LibreChat', name: invite.name });
+  await recordMemberAudit({ tenantId: undefined, action: 'member.invite_resent', actor: actorFromUser(actor), target: { type: 'standalone_invite', id: invite._id, name: invite.email }, context });
+  return { invite, ...emailResult };
+}
+
+async function revokeStandaloneInvite({ inviteId, actor, context }) {
+  const invite = await runAsSystem(() => models.InstitutionInvite.findOneAndUpdate({ _id: inviteId, accountScope: InstitutionInviteAccountScopes.STANDALONE, status: InstitutionInviteStatuses.PENDING }, { $set: { status: InstitutionInviteStatuses.REVOKED, revokedAt: new Date(), revokedBy: toObjectId(actor?.id ?? actor?._id) } }, { new: true }).lean().exec());
+  if (!invite) throw new HttpError(404, 'Pending invitation not found');
+  await recordMemberAudit({ tenantId: undefined, action: 'member.invite_revoked', actor: actorFromUser(actor), target: { type: 'standalone_invite', id: invite._id, name: invite.email }, context });
+  return invite;
 }
 
 async function revokeInstitutionInvite({ tenantId, inviteId, actor, context }) {
@@ -811,12 +967,54 @@ async function listInstitutionMembers({ tenantId, limit = 25, offset = 0, query,
 
 async function listPlatformInstitutionMembers({
   tenantId,
+  accountScope = 'institution',
   limit = 25,
   offset = 0,
   query,
   status,
   role,
 }) {
+  if (accountScope === 'standalone') {
+    const normalizedQuery = String(query || '').trim();
+    const searchFilter = normalizedQuery
+      ? { $or: [{ name: { $regex: escapeRegex(normalizedQuery), $options: 'i' } }, { email: { $regex: escapeRegex(normalizedQuery), $options: 'i' } }] }
+      : {};
+    const configuredAdmins = String(process.env.PLATFORM_SUPERADMIN_EMAILS || '').split(',').map((email) => email.trim().toLowerCase()).filter(Boolean);
+    const adminRecords = models.PlatformAdmin
+      ? await runAsSystem(() => models.PlatformAdmin.find({ active: true }).select('email').lean().exec())
+      : [];
+    const adminEmails = [...new Set([...configuredAdmins, ...adminRecords.map((admin) => admin.email).filter(Boolean)])];
+    // Older accounts may have been created before institution records existed and
+    // can retain a legacy tenantId. Treat those accounts as standalone when the
+    // referenced institution no longer exists. This keeps the Others view useful
+    // for pre-existing users without treating users belonging to a live
+    // institution as standalone.
+    const institutionTenantIds = await runAsSystem(() =>
+      models.Institution.distinct('tenantId').exec(),
+    );
+    const tenantlessFilter = {
+      $or: [
+        { tenantId: { $exists: false } },
+        { tenantId: null },
+        { tenantId: '' },
+        ...(institutionTenantIds.length > 0
+          ? [{ tenantId: { $nin: institutionTenantIds } }]
+          : []),
+      ],
+    };
+    const statusFilter = platformUserStatusFilter(status);
+    const userFilter = { $and: [tenantlessFilter, { email: { $nin: adminEmails } }, visibleMembershipFilter(), searchFilter, statusFilter, ...(status === 'invited' || status === InstitutionInviteStatuses.EXPIRED ? [{ _id: null }] : [])] };
+    const inviteFilter = { accountScope: InstitutionInviteAccountScopes.STANDALONE, ...(platformInviteStatusFilter(status) ? { status: platformInviteStatusFilter(status) } : { _id: null }), ...searchFilter };
+    const fetchLimit = offset + limit;
+    const [users, invites, userTotal, inviteTotal] = await runAsSystem(() => Promise.all([
+      models.User.find(userFilter).select('_id name username email emailVerified role provider membershipStatus createdAt updatedAt suspendedAt removedAt').sort({ createdAt: -1 }).limit(fetchLimit).lean().exec(),
+      models.InstitutionInvite.find(inviteFilter).select('_id name requestedUsername email requestedRole status source accountScope createdAt updatedAt lastSentAt expiresAt acceptedAt').sort({ createdAt: -1 }).limit(fetchLimit).lean().exec(),
+      models.User.countDocuments(userFilter),
+      models.InstitutionInvite.countDocuments(inviteFilter),
+    ]));
+    const members = [...users.map((user) => ({ ...mapUserMember(user), tenantId: undefined, institutionName: 'Others', accountScope: 'standalone' })), ...invites.map((invite) => ({ ...mapInviteMember(invite), tenantId: undefined, institutionName: 'Others', accountScope: 'standalone' }))].sort(sortMembersDesc).slice(offset, offset + limit);
+    return { members, total: userTotal + inviteTotal, limit, offset, summary: { activeMembers: userTotal, maxActiveMembers: null, pendingInvites: inviteTotal, institutions: 0 } };
+  }
   const normalizedQuery = String(query || '').trim();
   const searchFilter = normalizedQuery
     ? {
@@ -1045,36 +1243,7 @@ async function suspendInstitutionMember({ tenantId, userId, actor, context }) {
 
 async function removeInstitutionMember({ tenantId, userId, actor, context }) {
   const actorId = actor?.id ?? actor?._id;
-  const result = await withInstitutionUserTransaction(
-    tenantId,
-    userId,
-    async ({ institution, user }) => {
-      if (user.role === SystemRoles.ADMIN) {
-        throw new HttpError(403, 'Platform admins cannot be removed from tenant flows');
-      }
-
-      if (user.membershipStatus === InstitutionMembershipStatuses.REMOVED) {
-        return user;
-      }
-
-      if (isActiveStatus(user.membershipStatus)) {
-        const activeMembers = institution?.stats?.activeMembers ?? 0;
-        institution.stats = institution.stats || {};
-        institution.stats.activeMembers = Math.max(activeMembers - 1, 0);
-        await institution.save();
-      }
-
-      user.membershipStatus = InstitutionMembershipStatuses.REMOVED;
-      user.removedAt = new Date();
-      user.removedBy = toObjectId(actorId);
-      user.suspendedAt = null;
-      user.suspendedBy = null;
-      user.role = SystemRoles.USER;
-      await user.save();
-      return user.toObject();
-    },
-    () => removeMemberWithoutTransaction(tenantId, userId, actorId),
-  );
+  const result = await removeMemberWithoutTransaction(tenantId, userId, actorId);
 
   await recordMemberAudit({
     tenantId,
@@ -1118,6 +1287,7 @@ async function resolveInstitutionInviteByToken(encodedToken) {
   return {
     email: invite.email,
     name: invite.name || '',
+    ...(invite.requestedUsername ? { username: invite.requestedUsername } : null),
     status: invite.status,
   };
 }
@@ -1156,7 +1326,7 @@ async function findPendingInviteByToken(encodedToken, email) {
 }
 
 async function completeInviteAcceptance({ inviteId, userId }) {
-  return await runAsSystem(() =>
+  const invite = await runAsSystem(() =>
     models.InstitutionInvite.findOneAndUpdate(
       {
         _id: inviteId,
@@ -1174,6 +1344,25 @@ async function completeInviteAcceptance({ inviteId, userId }) {
       .lean()
       .exec(),
   );
+  if (invite?.creditPackageId) {
+    try {
+      const grantPackage = async () => {
+        const existingGrant = await models.CreditGrant.findOne({ inviteId: invite._id }).lean().exec();
+        if (existingGrant) return;
+        const appConfig = await getAppConfig(invite.tenantId ? { tenantId: invite.tenantId } : { baseOnly: true });
+        const pkg = getCreditPackages(appConfig).list.find((item) => item.id === invite.creditPackageId);
+        if (!pkg) throw new Error(`Invalid credit package: ${invite.creditPackageId}`);
+        const result = await db.createTransaction({ user: toObjectId(userId), tokenType: 'credits', context: 'purchase', rawAmount: pkg.credits, balance: appConfig.balance, tenantId: invite.tenantId });
+        if (!result) throw new Error('Balance is disabled');
+        await models.CreditGrant.create({ user: toObjectId(userId), tenantId: invite.tenantId ?? null, packageId: pkg.id, credits: pkg.credits, price: pkg.price, currency: getCreditPackages(appConfig).currency, source: 'invite', inviteId: invite._id, grantedBy: null });
+      };
+      if (invite.tenantId) await tenantStorage.run({ tenantId: invite.tenantId }, grantPackage);
+      else await grantPackage();
+    } catch (error) {
+      logger.error('[institutionMembers] invite credit grant failed', { inviteId, userId, error });
+    }
+  }
+  return invite;
 }
 
 async function activateProvisionedMember({ userId, tenantId }) {
@@ -1610,6 +1799,7 @@ module.exports = {
   completeInviteAcceptance,
   createInstitutionImportJob,
   createInstitutionInvite,
+  createStandaloneInvite,
   dryRunInstitutionImport,
   findInstitutionInviteByToken,
   findPendingInviteByToken,
@@ -1619,13 +1809,18 @@ module.exports = {
   listInstitutionMembers,
   listPlatformInstitutionMembers,
   removeInstitutionMember,
+  removeStandaloneMember,
   resolveInstitutionInviteByToken,
   reactivateInstitutionMember,
   resendInstitutionInvite,
+  resendStandaloneInvite,
   revokeInstitutionInvite,
+  revokeStandaloneInvite,
   searchInstitutionMembers,
   setInstitutionRole,
   suspendInstitutionMember,
+  suspendStandaloneMember,
+  reactivateStandaloneMember,
   activateProvisionedMember,
   InstitutionMembershipStatuses,
   INSTITUTION_ADMIN_ROLE,

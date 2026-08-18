@@ -42,6 +42,7 @@ export interface InstitutionMethods {
     options?: { suspendedBy?: string },
   ) => Promise<IInstitution | null>;
   reactivateInstitution: (tenantId: string) => Promise<IInstitution | null>;
+  closeInstitution: (tenantId: string) => Promise<IInstitution | null>;
 }
 
 export function createInstitutionMethods(mongoose: typeof import('mongoose')): InstitutionMethods {
@@ -161,6 +162,17 @@ export function createInstitutionMethods(mongoose: typeof import('mongoose')): I
       .exec();
   }
 
+  async function closeInstitution(tenantId: string): Promise<IInstitution | null> {
+    return await getModel()
+      .findOneAndUpdate(
+        { tenantId: tenantId.trim(), status: { $ne: InstitutionStatuses.CLOSED } },
+        { $set: { status: InstitutionStatuses.CLOSED } },
+        { new: true },
+      )
+      .lean<IInstitution | null>()
+      .exec();
+  }
+
   return {
     listInstitutions,
     countInstitutions,
@@ -170,5 +182,6 @@ export function createInstitutionMethods(mongoose: typeof import('mongoose')): I
     updateInstitutionByTenantId,
     suspendInstitution,
     reactivateInstitution,
+    closeInstitution,
   };
 }

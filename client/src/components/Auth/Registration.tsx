@@ -55,6 +55,9 @@ const Registration: React.FC = () => {
         if (invite.name) {
           setValue('name', invite.name, { shouldValidate: true });
         }
+        if (invite.username) {
+          setValue('username', invite.username, { shouldValidate: true });
+        }
       })
       .catch(() => {
         /** Prefill is a convenience; registration still validates the token. */

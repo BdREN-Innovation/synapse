@@ -161,6 +161,8 @@ async function createOrUpdateAgent(agentDef, author, dryRun) {
             tools: config.tools || [],
             orchestrationOnly: config.orchestrationOnly ?? false,
             subagents: config.subagents,
+            skills_enabled: config.skills_enabled ?? false,
+            skills: config.skills,
           },
         },
       ).exec();
@@ -192,6 +194,8 @@ async function createOrUpdateAgent(agentDef, author, dryRun) {
       tools: config.tools || [],
       orchestrationOnly: config.orchestrationOnly ?? false,
       subagents: config.subagents,
+      skills_enabled: config.skills_enabled ?? false,
+      skills: config.skills,
       author: author._id,
     }),
   );

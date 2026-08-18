@@ -3,6 +3,7 @@ const jwt = require('jsonwebtoken');
 const { webcrypto } = require('node:crypto');
 const {
   logger,
+  runAsSystem,
   getTenantId,
   DEFAULT_SESSION_EXPIRY,
   DEFAULT_REFRESH_TOKEN_EXPIRY,
@@ -36,6 +37,7 @@ const {
   deleteUserById,
   generateRefreshToken,
 } = require('~/models');
+const models = require('~/db/models');
 const { registerSchema } = require('~/strategies/validators');
 const { getAppConfig } = require('~/server/services/Config');
 const {
@@ -357,7 +359,10 @@ const registerUser = async (user, additionalData = {}) => {
 
   let newUserId;
   try {
-    const tenantId = invite?.tenantId || trustedAdditionalData?.tenantId || getTenantId();
+    const standaloneInvite = invite?.accountScope === 'standalone';
+    const tenantId = standaloneInvite
+      ? undefined
+      : invite?.tenantId || trustedAdditionalData?.tenantId || getTenantId();
     const appConfig = await getAppConfig(tenantId ? { tenantId } : {});
     if (!isEmailDomainAllowed(email, appConfig?.registration?.allowedDomains)) {
       const errorMessage =
@@ -366,7 +371,15 @@ const registerUser = async (user, additionalData = {}) => {
       return { status: 403, message: errorMessage };
     }
 
-    const existingUser = await findUser({ email }, 'email _id tenantId membershipStatus');
+    const existingUser = await findUser({ email }, 'email _id tenantId membershipStatus username');
+    if (invite && username) {
+      const usernameOwner = await runAsSystem(() =>
+        models.User.findOne({ username: username.toLowerCase() }).select('_id').lean().exec(),
+      );
+      if (usernameOwner && usernameOwner._id.toString() !== existingUser?._id?.toString()) {
+        return { status: 409, message: 'This username is already in use' };
+      }
+    }
 
     if (existingUser) {
       const inviteMayClaimAccount = invite != null && !(await isPlatformAdminEmail(email));
@@ -375,6 +388,19 @@ const registerUser = async (user, additionalData = {}) => {
           tenantId: invite.tenantId,
           inviteId: invite._id,
         });
+      }
+
+      if (inviteMayClaimAccount && invite?.accountScope === 'standalone' && !existingUser.tenantId) {
+        await updateUser(existingUser._id, {
+          provider: provider ?? 'local',
+          username,
+          name,
+          avatar: null,
+          role: SystemRoles.USER,
+          membershipStatus: InstitutionMembershipStatuses.ACTIVE,
+        });
+        await completeInviteAcceptance({ inviteId: invite._id, userId: existingUser._id.toString() });
+        return { status: 200, message: genericVerificationMessage };
       }
 
       if (inviteMayClaimAccount && !existingUser.tenantId) {
