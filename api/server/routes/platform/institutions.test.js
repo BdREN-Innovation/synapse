@@ -20,6 +20,19 @@ class MockHttpError extends Error {
 jest.mock('@librechat/data-schemas', () => ({
   runAsSystem: (fn) => fn(),
   logger: { error: jest.fn(), warn: jest.fn(), info: jest.fn(), debug: jest.fn() },
+  INSTITUTION_ADMIN_ROLE: 'INSTITUTION_ADMIN',
+}));
+
+/** The route reaches for concrete Mongoose models for its usage/agent views.
+ *  Stubbing the module keeps `createModels` (mocked away above) from running
+ *  and keeps these route tests free of a live database. */
+jest.mock('~/db/models', () => ({
+  Institution: { findOneAndUpdate: jest.fn() },
+  InstitutionPackage: { findOne: jest.fn() },
+  User: { find: jest.fn() },
+  Agent: { find: jest.fn(), findOne: jest.fn() },
+  Group: { find: jest.fn(), findOne: jest.fn() },
+  AclEntry: { find: jest.fn() },
 }));
 
 jest.mock('~/server/middleware', () => ({

@@ -1,7 +1,7 @@
 import { Schema } from 'mongoose';
 import type { ICreditGrant } from '~/types';
 
-const creditGrantSchema = new Schema<ICreditGrant>({
+const creditGrantSchema: Schema<ICreditGrant> = new Schema<ICreditGrant>({
   user: { type: Schema.Types.ObjectId, ref: 'User', required: true, index: true },
   tenantId: { type: String, required: false, index: true },
   packageId: { type: String, required: true },
