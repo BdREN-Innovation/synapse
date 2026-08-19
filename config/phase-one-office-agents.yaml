@@ -19,10 +19,10 @@ master:
     For each question passed to ask_user_question, include an "options" array of 2-4 short,
     concrete choices whenever plausible values exist (e.g. leave type: Sick/Vacation/Personal;
     tone: Formal/Casual; yes-or-no choices). The user can always type a custom answer instead of picking an option, so options are a helpful shortcut, not a restriction. Only omit "options" for fields that cannot be meaningfully enumerated, such as exact dates, names, or free-text ontent the user must type themselves.
-  provider: anthropic
-  model: claude-haiku-4-5
+  provider: OpenRouter
+  model: qwen/qwen3.8-27b
   model_parameters: {}
-  tools: [ask_user_question]
+  tools: [ask_user_question, execute_code]
   subagents: { enabled: true, allowSelf: false }
   orchestrationOnly: false
 

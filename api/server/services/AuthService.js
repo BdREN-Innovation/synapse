@@ -397,6 +397,7 @@ const registerUser = async (user, additionalData = {}) => {
           name,
           avatar: null,
           role: SystemRoles.USER,
+          accountScope: 'standalone',
           membershipStatus: InstitutionMembershipStatuses.ACTIVE,
         });
         await completeInviteAcceptance({ inviteId: invite._id, userId: existingUser._id.toString() });
@@ -406,6 +407,7 @@ const registerUser = async (user, additionalData = {}) => {
       if (inviteMayClaimAccount && !existingUser.tenantId) {
         await updateUser(existingUser._id, {
           tenantId: invite.tenantId,
+          accountScope: 'institution',
           provider: provider ?? 'local',
           username,
           name,
@@ -434,6 +436,7 @@ const registerUser = async (user, additionalData = {}) => {
         const salt = bcrypt.genSaltSync(10);
         await updateUser(existingUser._id, {
           provider: provider ?? 'local',
+          accountScope: 'institution',
           username,
           name,
           avatar: null,
@@ -477,9 +480,10 @@ const registerUser = async (user, additionalData = {}) => {
       ...(tenantId
         ? {
             tenantId,
+            accountScope: 'institution',
             membershipStatus: InstitutionMembershipStatuses.SUSPENDED,
           }
-        : null),
+        : { accountScope: 'standalone' }),
       ...trustedAdditionalData,
     };
 

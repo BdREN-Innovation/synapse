@@ -19,7 +19,11 @@ export { MAX_SUBAGENTS } from './limits';
 
 export const defaultSocialLogins = ['google', 'facebook', 'openid', 'github', 'discord', 'saml'];
 
-export const BASE_ONLY_CONFIG_SECTIONS = [] as const;
+/** Sections that must only ever come from librechat.yaml — the admin config
+ * API rejects writes to these paths, and the DB-override merge skips them
+ * even if a stale record exists, so librechat.yaml stays the sole source of
+ * truth regardless of what the admin UI has previously written. */
+export const BASE_ONLY_CONFIG_SECTIONS = ['modelSpecs'] as const;
 /** Sections that may be stored in the tenant's base config document but must
  * not be overridden or tombstoned by role, group, or user config documents. */
 export const BASE_PRINCIPAL_CONFIG_SECTIONS = ['langfuse'] as const;

@@ -201,6 +201,7 @@ export function mergeConfigOverrides(baseConfig: AppConfig, configs: IConfig[]):
       for (const path of config.tombstones) {
         if (
           typeof path === 'string' &&
+          !BASE_ONLY_OVERRIDE_SECTIONS.has(path.split('.')[0]) &&
           (isBasePrincipal || !BASE_PRINCIPAL_OVERRIDE_SECTIONS.has(path.split('.')[0]))
         ) {
           merged = deletePath(merged, remapOverridePath(path));

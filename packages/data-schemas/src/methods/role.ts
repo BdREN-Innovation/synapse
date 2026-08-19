@@ -42,7 +42,7 @@ export function createRoleMethods(
   listRoles: (options?: {
     limit?: number;
     offset?: number;
-  }) => Promise<Pick<IRole, '_id' | 'name' | 'description'>[]>;
+  }) => Promise<Pick<IRole, '_id' | 'name' | 'description' | 'tenantId'>[]>;
   countRoles: () => Promise<number>;
   initializeRoles: () => Promise<void>;
   getRoleByName: (roleName: string, fieldsToSelect?: string | string[] | null) => Promise<IRole>;
@@ -141,13 +141,13 @@ export function createRoleMethods(
   async function listRoles(options?: {
     limit?: number;
     offset?: number;
-  }): Promise<Pick<IRole, '_id' | 'name' | 'description'>[]> {
+  }): Promise<Pick<IRole, '_id' | 'name' | 'description' | 'tenantId'>[]> {
     const Role = mongoose.models.Role as Model<IRole>;
     const limit = options?.limit ?? 50;
     const offset = options?.offset ?? 0;
     return await Role.find({})
-      .select('name description')
-      .sort({ name: 1 })
+      .select('name description tenantId')
+      .sort({ name: 1, tenantId: 1 })
       .skip(offset)
       .limit(limit)
       .lean();

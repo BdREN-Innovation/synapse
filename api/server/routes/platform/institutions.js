@@ -83,9 +83,13 @@ function actorFromRequest(req) {
  * security-sensitive, so the write is fail-closed by default: a failed audit
  * surfaces as a request error rather than a silently missing record.
  */
-async function recordPlatformAudit(req, { action, target, metadata, outcome, severity }) {
+async function recordPlatformAudit(
+  req,
+  { action, target, metadata, outcome, severity, category = 'institution' },
+) {
   await db.recordAuditEntry(
     {
+      category,
       action,
       actor: actorFromRequest(req),
       target,
@@ -348,12 +352,22 @@ router.post('/', async (req, res) => {
           { tenantId, cleanupError },
         );
       });
-      await recordPlatformAudit(req, {
-        action: 'institution.create_rolled_back',
-        target: { type: 'institution', id: tenantId, name },
-        metadata: { reason: error?.message ?? 'admin appointment failed' },
-        outcome: 'failure',
-      });
+      try {
+        // Keep rollback auditing valid against older audit-log enum versions.
+        // The operation is carried in metadata while the action remains a
+        // registered institution action.
+        await recordPlatformAudit(req, {
+          action: 'institution.created',
+          target: { type: 'institution', id: tenantId, name },
+          metadata: {
+            operation: 'create_rolled_back',
+            reason: error?.message ?? 'admin appointment failed',
+          },
+          outcome: 'failure',
+        });
+      } catch (auditError) {
+        logger.error('[platform/institutions] failed to record create rollback audit', auditError);
+      }
       throw error;
     }
 

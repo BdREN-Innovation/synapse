@@ -35,6 +35,22 @@ export enum SystemRoles {
 }
 
 /**
+ * Canonical SaaS account roles. These describe effective account scope and
+ * administrative authority; legacy `ADMIN` and `USER` values remain accepted
+ * while existing records are migrated.
+ */
+export const CanonicalRoles = {
+  PLATFORM_SUPERADMIN: 'PLATFORM_SUPERADMIN',
+  INSTITUTION_ADMIN: 'INSTITUTION_ADMIN',
+  INSTITUTION_MEMBER: 'INSTITUTION_MEMBER',
+  STANDALONE_USER: 'STANDALONE_USER',
+} as const;
+
+export type CanonicalRole = (typeof CanonicalRoles)[keyof typeof CanonicalRoles];
+
+export type AccountScope = 'platform' | 'institution' | 'standalone';
+
+/**
  * Tenant-scoped institution administrator. Declared here rather than imported
  * from `@librechat/data-schemas`, whose barrel pulls in Node-only modules and
  * cannot be used for runtime values in client code. Kept in sync with

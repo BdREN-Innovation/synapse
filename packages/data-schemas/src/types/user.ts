@@ -60,6 +60,8 @@ export interface IUser extends Document {
   /** Field for external source identification (for consistency with TPrincipal schema) */
   idOnTheSource?: string;
   tenantId?: string;
+  /** Explicit SaaS account scope; legacy records derive this from tenantId. */
+  accountScope?: 'institution' | 'standalone';
   membershipStatus?: InstitutionMembershipStatus;
   suspendedAt?: Date | null;
   suspendedBy?: string | Types.ObjectId | null;

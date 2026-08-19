@@ -20,6 +20,7 @@ const db = require('~/models');
 const models = require('~/db/models');
 const { sendEmail } = require('~/server/utils');
 const { isPlatformAdminEmail } = require('./platformAdmin');
+const { resolveMemberRole, toStoredUserRole, isPlatformRole } = require('./accountRoles');
 const { appointInstitutionAdmin, revokeInstitutionAdmin } = require('./tenancy');
 const { getAppConfig } = require('./Config');
 
@@ -60,7 +61,9 @@ function normalizeUsername(username) {
 }
 
 function normalizeRole(role) {
-  return role === INSTITUTION_ADMIN_ROLE ? INSTITUTION_ADMIN_ROLE : SystemRoles.USER;
+  return role === INSTITUTION_ADMIN_ROLE || role === 'INSTITUTION_ADMIN'
+    ? INSTITUTION_ADMIN_ROLE
+    : toStoredUserRole(role);
 }
 
 function toObjectId(value) {
@@ -464,7 +467,7 @@ async function removeMemberWithoutTransaction(tenantId, userId, actorId) {
   if (!user) {
     throw new HttpError(404, 'Member not found');
   }
-  if (user.role === SystemRoles.ADMIN) {
+  if (isPlatformRole(user.role)) {
     throw new HttpError(403, 'Platform admins cannot be removed from tenant flows');
   }
   const wasActive = isActiveStatus(user.membershipStatus);
@@ -494,7 +497,7 @@ async function suspendStandaloneMember({ userId, actor, context }) {
   if (!user) {
     throw new HttpError(404, 'Standalone user not found');
   }
-  if (user.role === SystemRoles.ADMIN) {
+  if (isPlatformRole(user.role)) {
     throw new HttpError(403, 'Platform admins cannot be suspended');
   }
   if (user.membershipStatus === InstitutionMembershipStatuses.REMOVED) {
@@ -525,7 +528,7 @@ async function reactivateStandaloneMember({ userId, actor, context }) {
   if (!user) {
     throw new HttpError(404, 'Standalone user not found');
   }
-  if (user.role === SystemRoles.ADMIN) {
+  if (isPlatformRole(user.role)) {
     throw new HttpError(403, 'Platform admins cannot be reactivated');
   }
   if (user.membershipStatus === InstitutionMembershipStatuses.REMOVED) {
@@ -556,7 +559,7 @@ async function removeStandaloneMember({ userId, actor, context }) {
   if (!user) {
     throw new HttpError(404, 'Standalone user not found');
   }
-  if (user.role === SystemRoles.ADMIN) {
+  if (isPlatformRole(user.role)) {
     throw new HttpError(403, 'Platform admins cannot be removed');
   }
   await deleteUserAccountData(user);
@@ -574,11 +577,12 @@ function isActiveStatus(status) {
   return status == null || status === InstitutionMembershipStatuses.ACTIVE;
 }
 
-function mapRequestedRole(role) {
-  return normalizeRole(role);
+function mapRequestedRole(role, { tenantId, accountScope } = {}) {
+  return resolveMemberRole({ role, tenantId, accountScope });
 }
 
 function mapUserMember(user) {
+  const accountScope = user.accountScope || (user.tenantId ? 'institution' : 'standalone');
   return {
     id: user._id.toString(),
     kind: 'user',
@@ -587,7 +591,8 @@ function mapUserMember(user) {
     username: user.username ?? null,
     email: user.email ?? '',
     emailVerified: user.emailVerified === true,
-    role: mapRequestedRole(user.role),
+    accountScope,
+    role: mapRequestedRole(user.role, { tenantId: user.tenantId, accountScope }),
     status: user.membershipStatus ?? InstitutionMembershipStatuses.ACTIVE,
     provider: user.provider ?? 'local',
     createdAt: formatDate(user.createdAt),
@@ -598,6 +603,7 @@ function mapUserMember(user) {
 }
 
 function mapInviteMember(invite) {
+  const accountScope = invite.accountScope || (invite.tenantId ? 'institution' : 'standalone');
   return {
     id: invite._id.toString(),
     kind: 'invite',
@@ -605,7 +611,11 @@ function mapInviteMember(invite) {
     name: invite.name ?? '',
     username: invite.requestedUsername ?? null,
     email: invite.email ?? '',
-    role: mapRequestedRole(invite.requestedRole),
+    accountScope,
+    role: mapRequestedRole(invite.requestedRole, {
+      tenantId: invite.tenantId,
+      accountScope,
+    }),
     status:
       invite.status === InstitutionInviteStatuses.EXPIRED
         ? InstitutionInviteStatuses.EXPIRED
@@ -943,7 +953,10 @@ async function listInstitutionMembers({ tenantId, limit = 25, offset = 0, query,
       if (status && member.status !== status) {
         return false;
       }
-      if (role && member.role !== role) {
+      const requestedRole = role
+        ? resolveMemberRole({ role, tenantId, accountScope: 'institution' })
+        : undefined;
+      if (requestedRole && member.role !== requestedRole) {
         return false;
       }
       if (!normalizedQuery) {
@@ -1025,6 +1038,9 @@ async function listPlatformInstitutionMembers({
       }
     : {};
   const tenantFilter = tenantId ? { tenantId } : { tenantId: { $exists: true, $ne: null } };
+  const storedRole = role
+    ? normalizeRole(role)
+    : undefined;
   const statusFilter = platformUserStatusFilter(status);
   const userFilter = {
     $and: [
@@ -1035,7 +1051,7 @@ async function listPlatformInstitutionMembers({
       ...(status === 'invited' || status === InstitutionInviteStatuses.EXPIRED
         ? [{ _id: null }]
         : []),
-      ...(role ? [{ role }] : []),
+      ...(storedRole ? [{ role: storedRole }] : []),
     ],
   };
   const inviteStatus = platformInviteStatusFilter(status);
@@ -1043,7 +1059,7 @@ async function listPlatformInstitutionMembers({
     ...tenantFilter,
     ...(inviteStatus ? { status: inviteStatus } : { _id: null }),
     ...searchFilter,
-    ...(role ? { requestedRole: role } : null),
+    ...(storedRole ? { requestedRole: storedRole } : null),
   };
   const fetchLimit = offset + limit;
 
@@ -1052,7 +1068,7 @@ async function listPlatformInstitutionMembers({
       Promise.all([
         models.User.find(userFilter)
           .select(
-            '_id tenantId name email emailVerified role provider membershipStatus createdAt updatedAt suspendedAt removedAt',
+            '_id tenantId accountScope name email emailVerified role provider membershipStatus createdAt updatedAt suspendedAt removedAt',
           )
           .sort({ createdAt: -1 })
           .limit(fetchLimit)

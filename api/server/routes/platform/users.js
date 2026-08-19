@@ -7,6 +7,7 @@ const models = require('~/db/models');
 const db = require('~/models');
 const { resendUserVerificationEmail } = require('~/server/services/AuthService');
 const { isPlatformAdminEmail } = require('~/server/services/platformAdmin');
+const { resolveMemberRole } = require('~/server/services/accountRoles');
 const { getMemberUsageSummary } = require('~/server/services/institutionUsage');
 const {
   HttpError,
@@ -104,13 +105,17 @@ async function mapPlatformUser(user) {
     id: user._id.toString(),
     kind: 'user',
     tenantId: user.tenantId ?? undefined,
-    accountScope: user.tenantId ? 'institution' : 'standalone',
+    accountScope: user.accountScope || (user.tenantId ? 'institution' : 'standalone'),
     institutionName: institution?.name ?? 'Others',
     name: user.name ?? '',
     username: user.username ?? null,
     email: user.email ?? '',
     emailVerified: user.emailVerified === true,
-    role: user.role === 'INSTITUTION_ADMIN' ? 'INSTITUTION_ADMIN' : 'USER',
+    role: resolveMemberRole({
+      role: user.role,
+      tenantId: user.tenantId,
+      accountScope: user.accountScope || (user.tenantId ? 'institution' : 'standalone'),
+    }),
     status: user.membershipStatus ?? 'active',
     provider: user.provider ?? 'local',
     createdAt: user.createdAt?.toISOString?.() ?? user.createdAt,

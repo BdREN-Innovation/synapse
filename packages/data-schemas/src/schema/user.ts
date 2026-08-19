@@ -167,6 +167,11 @@ const userSchema: Schema<IUser> = new Schema<IUser>(
       type: String,
       index: true,
     },
+    accountScope: {
+      type: String,
+      enum: ['institution', 'standalone'],
+      index: true,
+    },
     membershipStatus: {
       type: String,
       enum: Object.values(InstitutionMembershipStatuses),

@@ -873,6 +873,12 @@ export function createAdminConfigHandlers(deps: AdminConfigDeps): {
         );
         return res.status(200).json({ message: 'No actionable field path provided' });
       }
+      if (isBaseOnlyFieldPath(fieldPath)) {
+        logger.warn(
+          `[adminConfig] Ignoring tombstone for base-only field "${fieldPath}" — configure it in librechat.yaml instead`,
+        );
+        return res.status(200).json({ message: 'No actionable field path provided' });
+      }
       if (BASE_PRINCIPAL_OVERRIDE_SECTIONS.has(section)) {
         logger.warn(
           `[adminConfig] Ignoring dedicated tenant-wide config tombstone "${fieldPath}" in the generic config API`,
