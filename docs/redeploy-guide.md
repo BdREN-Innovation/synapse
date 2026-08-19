@@ -172,8 +172,26 @@ Easy to forget — it has its own repo and runs on Bun, not npm.
 cd /opt/synapse-admin
 git pull --ff-only
 export PATH="$HOME/.bun/bin:$PATH"
+export VITE_BASE_PATH=/adminpanel                # REQUIRED — see below
+export VITE_API_BASE_URL=https://chat.bdren.ai
 bun install && bun run build
 pm2 restart synapse-admin
+```
+
+**`VITE_BASE_PATH` must be exported in the build shell, not just present in
+`.env`.** The panel's `vite.config.ts` reads it via `process.env` at
+config-evaluation time, and Vite loads `.env` files only into `import.meta.env`
+— never into `process.env` for the config itself. A bare `bun run build`
+therefore silently builds with base `/`: the panel serves, the shell renders
+"Loading…", and the console shows
+`Failed to fetch dynamically imported module: https://chat.bdren.ai/assets/main-*.js`
+(note the missing `/adminpanel` prefix — root-based asset URLs land on the chat
+app instead). This exact failure shipped on 2026-08-19.
+
+Verify the base took before restarting:
+
+```bash
+grep -rao '/adminpanel/assets/main-[a-zA-Z0-9_-]*\.js' dist/server/ | head -1   # must match
 ```
 
 ---
@@ -314,4 +332,5 @@ UTC+6, so month boundaries are 6 hours off.
 | App runs but behaves like the old version | Stale turbo cache — built output not rebuilt | `npx turbo build --force && pm2 restart synapse` |
 | `Institution model is not registered` in logs | Migration not run, or ran against the wrong database | Re-run §4 migration; check `MONGO_URI` |
 | Admin panel won't boot | `SESSION_SECRET` missing in `/opt/synapse-admin/.env` | Set it — the dev fallback only exists under `bun run dev` |
+| Admin panel stuck on "Loading…", console shows `Failed to fetch dynamically imported module: …/assets/main-*.js` (no `/adminpanel` prefix) | Built without `VITE_BASE_PATH` exported in the shell — `.env` alone is not enough | Re-run the §4 admin build with the exports; verify with the `dist/server` grep |
 | 502 from nginx | App not listening | `pm2 list`, `curl localhost:3080/health`, `pm2 logs synapse --err` |
