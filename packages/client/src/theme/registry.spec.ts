@@ -14,7 +14,10 @@ const compactTheme: ThemeDefinition = {
   name: 'compact-reference',
   modes: {
     light: {
-      colors: { 'rgb-accent-primary': '1 2 3' },
+      colors: {
+        'rgb-accent-primary': '1 2 3',
+        'rgb-auth-background': '4 5 6',
+      },
       appearance: {
         controlRadius: '0.25rem',
         roundControlRadius: '0.25rem',
@@ -41,6 +44,7 @@ describe('theme registry', () => {
     const dark = resolveTheme(compactTheme, 'dark');
 
     expect(light.colors['rgb-accent-primary']).toBe('1 2 3');
+    expect(light.colors['rgb-auth-background']).toBe('4 5 6');
     expect(light.colors['rgb-text-primary']).toBe(defaultTheme['rgb-text-primary']);
     expect(light.appearance.controlRadius).toBe('0.25rem');
     expect(light.appearance.fontFamily).toBe(defaultAppearance.fontFamily);

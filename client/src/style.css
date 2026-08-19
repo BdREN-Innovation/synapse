@@ -160,6 +160,13 @@ html {
   --link-visited: 147 51 234;
   --accent-primary: 245 135 31;
   --accent-primary-hover: 232 115 12;
+  --auth-background: 1 19 24;
+  --auth-surface: 3 25 30;
+  --auth-surface-alt: 7 32 37;
+  --auth-border: 87 115 117;
+  --auth-text: 244 247 246;
+  --auth-muted: 184 196 195;
+  --auth-decoration: 53 191 186;
   --ring-primary: var(--gray-500);
   --header-primary: var(--white);
   --header-hover: var(--gray-50);
@@ -249,6 +256,13 @@ html {
   --link-visited: 192 132 252;
   --accent-primary: 245 135 31;
   --accent-primary-hover: 251 162 77;
+  --auth-background: 1 19 24;
+  --auth-surface: 3 25 30;
+  --auth-surface-alt: 7 32 37;
+  --auth-border: 87 115 117;
+  --auth-text: 244 247 246;
+  --auth-muted: 184 196 195;
+  --auth-decoration: 53 191 186;
   --header-primary: var(--gray-700);
   --header-hover: var(--gray-600);
   --header-button-hover: var(--gray-700);

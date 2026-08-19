@@ -13,8 +13,10 @@ import { useLocalize } from '~/hooks';
 
 function SocialLoginRender({
   startupConfig,
+  immersive = false,
 }: {
   startupConfig: TStartupConfig | null | undefined;
+  immersive?: boolean;
 }) {
   const localize = useLocalize();
 
@@ -32,6 +34,7 @@ function SocialLoginRender({
         Icon={DiscordIcon}
         label={localize('com_auth_discord_login')}
         id="discord"
+        immersive={immersive}
       />
     ),
     facebook: startupConfig.facebookLoginEnabled && (
@@ -43,6 +46,7 @@ function SocialLoginRender({
         Icon={FacebookIcon}
         label={localize('com_auth_facebook_login')}
         id="facebook"
+        immersive={immersive}
       />
     ),
     github: startupConfig.githubLoginEnabled && (
@@ -54,6 +58,7 @@ function SocialLoginRender({
         Icon={GithubIcon}
         label={localize('com_auth_github_login')}
         id="github"
+        immersive={immersive}
       />
     ),
     google: startupConfig.googleLoginEnabled && (
@@ -65,6 +70,7 @@ function SocialLoginRender({
         Icon={GoogleIcon}
         label={localize('com_auth_google_login')}
         id="google"
+        immersive={immersive}
       />
     ),
     apple: startupConfig.appleLoginEnabled && (
@@ -76,6 +82,7 @@ function SocialLoginRender({
         Icon={AppleIcon}
         label={localize('com_auth_apple_login')}
         id="apple"
+        immersive={immersive}
       />
     ),
     openid: startupConfig.openidLoginEnabled && (
@@ -93,6 +100,7 @@ function SocialLoginRender({
         }
         label={startupConfig.openidLabel}
         id="openid"
+        immersive={immersive}
       />
     ),
     saml: startupConfig.samlLoginEnabled && (
@@ -110,6 +118,7 @@ function SocialLoginRender({
         }
         label={startupConfig.samlLabel ? startupConfig.samlLabel : localize('com_auth_saml_login')}
         id="saml"
+        immersive={immersive}
       />
     ),
   };
@@ -119,12 +128,22 @@ function SocialLoginRender({
       <>
         {startupConfig.emailLoginEnabled && (
           <>
-            <div className="relative mt-6 flex w-full items-center justify-center border border-t border-border-medium uppercase">
-              <div className="absolute bg-surface-primary px-3 text-xs text-text-primary">
-                {localize('com_auth_or')}
+            <div
+              className={`relative mt-7 flex w-full items-center justify-center border-t ${
+                immersive ? 'border-auth-border/50' : 'border-border-medium'
+              }`}
+            >
+              <div
+                className={`absolute px-3 text-sm ${
+                  immersive
+                    ? 'bg-auth-surface text-auth-muted'
+                    : 'bg-surface-primary text-text-primary'
+                }`}
+              >
+                {immersive ? localize('com_auth_or_continue') : localize('com_auth_or')}
               </div>
             </div>
-            <div className="mt-8" />
+            <div className="mt-7" />
           </>
         )}
         <div className="mt-2">

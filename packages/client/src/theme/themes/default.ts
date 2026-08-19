@@ -20,6 +20,15 @@ export const defaultTheme: IThemeRGB = {
   'rgb-accent-primary': '245 135 31', // #f5871f (BdREN Synapse orange)
   'rgb-accent-primary-hover': '232 115 12', // #e8730c
 
+  // Auth experience colors
+  'rgb-auth-background': '1 19 24', // #011318 (deep teal)
+  'rgb-auth-surface': '3 25 30', // #03191e
+  'rgb-auth-surface-alt': '7 32 37', // #072025
+  'rgb-auth-border': '87 115 117', // #577375
+  'rgb-auth-text': '244 247 246', // #f4f7f6
+  'rgb-auth-muted': '184 196 195', // #b8c4c3
+  'rgb-auth-decoration': '53 191 186', // #35bfba
+
   // Ring colors
   'rgb-ring-primary': '89 89 89', // #595959 (gray-500)
 

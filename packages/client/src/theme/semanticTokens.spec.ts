@@ -228,4 +228,14 @@ describe.each([
     );
     expect(failures).toEqual([]);
   });
+
+  it('keeps auth copy legible on the branded auth surfaces', () => {
+    expect(
+      belowAA(
+        theme,
+        ['rgb-auth-text', 'rgb-auth-muted'],
+        ['rgb-auth-background', 'rgb-auth-surface', 'rgb-auth-surface-alt'],
+      ),
+    ).toEqual([]);
+  });
 });

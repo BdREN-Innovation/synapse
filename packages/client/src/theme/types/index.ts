@@ -18,6 +18,15 @@ export interface IThemeRGB {
   'rgb-accent-primary'?: string;
   'rgb-accent-primary-hover'?: string;
 
+  // Auth experience colors
+  'rgb-auth-background'?: string;
+  'rgb-auth-surface'?: string;
+  'rgb-auth-surface-alt'?: string;
+  'rgb-auth-border'?: string;
+  'rgb-auth-text'?: string;
+  'rgb-auth-muted'?: string;
+  'rgb-auth-decoration'?: string;
+
   // Ring colors
   'rgb-ring-primary'?: string;
 
@@ -105,6 +114,13 @@ export interface IThemeVariables {
   '--link-visited': string;
   '--accent-primary': string;
   '--accent-primary-hover': string;
+  '--auth-background': string;
+  '--auth-surface': string;
+  '--auth-surface-alt': string;
+  '--auth-border': string;
+  '--auth-text': string;
+  '--auth-muted': string;
+  '--auth-decoration': string;
   '--ring-primary': string;
   '--header-primary': string;
   '--header-hover': string;
@@ -183,6 +199,13 @@ export interface IThemeColors {
   'link-visited'?: string;
   'accent-primary'?: string;
   'accent-primary-hover'?: string;
+  'auth-background'?: string;
+  'auth-surface'?: string;
+  'auth-surface-alt'?: string;
+  'auth-border'?: string;
+  'auth-text'?: string;
+  'auth-muted'?: string;
+  'auth-decoration'?: string;
   'ring-primary'?: string;
   'header-primary'?: string;
   'header-hover'?: string;

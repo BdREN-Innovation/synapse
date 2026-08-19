@@ -27,6 +27,17 @@ license: Proprietary. LICENSE.txt has complete terms
 - **A workbook *you create* for someone to fill in** needs a short legend naming which cells to edit, and one example row of realistic values showing the expected format. Never add such a row to a file you were asked to edit.
 - **Editing an existing file: match its conventions exactly.** They override every guideline here. Find its designated input cells first — a distinct font color, fill, or shading marks them — write only there, and leave every existing formula untouched.
 
+## Mandatory calculation completion gate
+
+For any request involving totals, costs, quantities, subtotals, balances, percentages, or other derived values, saving the workbook is not completion:
+
+1. Put formulas in every requested calculated cell; do not only calculate values in Python.
+2. Save the workbook to the final output path.
+3. Recalculate it with `python /mnt/data/skills/xlsx/scripts/recalc.py /mnt/data/output.xlsx`.
+4. Verify every requested result with `python /mnt/data/skills/xlsx/scripts/verify_calculations.py /mnt/data/output.xlsx --formula 'Sheet!F12' --expect 'Sheet!F12=150000'`.
+5. Do not return or attach the workbook unless both commands report success. A saved file with a blank, stale, or hardcoded total is a failed deliverable.
+6. State in the final response how many formula cells and calculated values were checked.
+
 ## Recalculate (mandatory whenever the file contains formulas)
 
 openpyxl writes formulas as strings with **no cached values**. Until you recalculate, every
@@ -34,7 +45,7 @@ formula cell reads back as `None` to anything reading cached values — `pandas`
 `load_workbook(data_only=True)`, and most previewers.
 
 ```bash
-python scripts/recalc.py output.xlsx [timeout_seconds]   # default 30
+python /mnt/data/skills/xlsx/scripts/recalc.py /mnt/data/output.xlsx [timeout_seconds]   # default 30
 ```
 
 LibreOffice computes every formula, the file is **rewritten in place**, and you get JSON:
@@ -42,8 +53,7 @@ LibreOffice computes every formula, the file is **rewritten in place**, and you 
 `error_summary` naming up to 100 cells per error type (`locations_truncated` says how many it
 withheld — trust `total_errors`, not the length of the list). Fix what it names and run it
 again. **JSON with an `error` key instead of a `status` means nothing was recalculated**, and
-only that case exits non-zero — `errors_found` exits 0, so never treat a clean exit as a clean
-workbook.
+`errors_found` exits with code 2, so the execution step fails and must be fixed before delivery.
 
 **A green recalc proves your formulas *evaluate*, not that they are *right*.** An off-by-one
 range or a reference to the wrong row yields a clean, error-free file with wrong numbers.

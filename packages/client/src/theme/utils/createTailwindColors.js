@@ -79,6 +79,14 @@ function createTailwindColors() {
     'accent-primary': cssVar('--accent-primary'),
     'accent-primary-hover': cssVar('--accent-primary-hover'),
 
+    'auth-background': cssVar('--auth-background'),
+    'auth-surface': cssVar('--auth-surface'),
+    'auth-surface-alt': cssVar('--auth-surface-alt'),
+    'auth-border': cssVar('--auth-border'),
+    'auth-text': cssVar('--auth-text'),
+    'auth-muted': cssVar('--auth-muted'),
+    'auth-decoration': cssVar('--auth-decoration'),
+
     'ring-primary': cssVar('--ring-primary'),
 
     'header-primary': cssVar('--header-primary'),

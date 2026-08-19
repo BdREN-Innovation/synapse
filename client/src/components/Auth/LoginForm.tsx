@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useContext } from 'react';
 import { useForm } from 'react-hook-form';
+import { ArrowRight, LockKeyhole, Mail } from 'lucide-react';
 import { Turnstile } from '@marsidev/react-turnstile';
 import { ThemeContext, SecretInput, Spinner, Button, Input, isDark } from '@librechat/client';
 import type { TLoginUser, TStartupConfig } from 'librechat-data-provider';
@@ -32,12 +33,11 @@ const LoginForm: React.FC<TLoginFormProps> = ({ onSubmit, startupConfig, error, 
   const validTheme = isDark(theme) ? 'dark' : 'light';
   const requireCaptcha = Boolean(startupConfig.turnstile?.siteKey);
   const authInputClassName =
-    'webkit-dark-styles transition-color peer h-auto w-full rounded-2xl border border-border-light bg-surface-primary px-3.5 pb-2.5 pt-3 text-text-primary duration-200 hover:border-border-light focus:border-accent-primary focus:outline-none focus-visible:border-accent-primary';
+    'webkit-dark-styles h-14 w-full rounded-theme-control border border-auth-border/50 bg-auth-surface-alt/80 pl-12 pr-4 text-base text-auth-text transition-colors duration-theme-normal placeholder:text-auth-muted/70 hover:border-auth-border focus:border-accent-primary focus:outline-none focus-visible:border-accent-primary focus-visible:ring-2 focus-visible:ring-accent-primary/25';
   const authSecretInputClassName = `${authInputClassName} pr-12`;
-  const authLabelClassName =
-    'absolute start-3 top-1.5 z-10 origin-[0] -translate-y-4 scale-75 transform bg-surface-primary px-2 text-sm text-text-secondary-alt duration-200 peer-placeholder-shown:top-1/2 peer-placeholder-shown:-translate-y-1/2 peer-placeholder-shown:scale-100 peer-focus:top-1.5 peer-focus:-translate-y-4 peer-focus:scale-75 peer-focus:px-2 peer-focus:text-accent-primary rtl:peer-focus:left-auto rtl:peer-focus:translate-x-1/4';
+  const authLabelClassName = 'mb-2 block text-sm font-medium text-auth-muted';
   const authSecretButtonClassName =
-    'size-9 rounded-xl text-text-secondary-alt hover:bg-transparent hover:text-text-primary';
+    'size-9 rounded-theme-control text-auth-muted hover:bg-transparent hover:text-auth-text';
 
   useEffect(() => {
     if (error && error.includes('422') && !showResendLink) {
@@ -89,13 +89,23 @@ const LoginForm: React.FC<TLoginFormProps> = ({ onSubmit, startupConfig, error, 
         </div>
       )}
       <form
-        className="mt-6"
+        className="mt-8"
         aria-label="Login form"
         method="POST"
         onSubmit={handleSubmit((data) => onSubmit(data))}
       >
-        <div className="mb-4">
+        <div className="mb-5">
+          <label htmlFor="email" className={authLabelClassName}>
+            {useUsernameLogin
+              ? localize('com_auth_username').replace(/ \(.*$/, '')
+              : localize('com_auth_email_address')}
+          </label>
           <div className="relative">
+            <Mail
+              className="pointer-events-none absolute left-4 top-1/2 z-10 size-5 -translate-y-1/2 text-auth-muted"
+              strokeWidth={1.7}
+              aria-hidden="true"
+            />
             <Input
               type="text"
               id="email"
@@ -110,18 +120,21 @@ const LoginForm: React.FC<TLoginFormProps> = ({ onSubmit, startupConfig, error, 
               })}
               aria-invalid={!!errors.email}
               className={authInputClassName}
-              placeholder=" "
+              placeholder={localize('com_auth_email')}
             />
-            <label htmlFor="email" className={authLabelClassName}>
-              {useUsernameLogin
-                ? localize('com_auth_username').replace(/ \(.*$/, '')
-                : localize('com_auth_email_address')}
-            </label>
           </div>
           {renderError('email')}
         </div>
         <div className="mb-2">
+          <label htmlFor="password" className={authLabelClassName}>
+            {localize('com_auth_password')}
+          </label>
           <div className="relative">
+            <LockKeyhole
+              className="pointer-events-none absolute left-4 top-1/2 z-10 size-5 -translate-y-1/2 text-auth-muted"
+              strokeWidth={1.7}
+              aria-hidden="true"
+            />
             <SecretInput
               id="password"
               autoComplete="current-password"
@@ -136,9 +149,7 @@ const LoginForm: React.FC<TLoginFormProps> = ({ onSubmit, startupConfig, error, 
               })}
               aria-invalid={!!errors.password}
               className={authSecretInputClassName}
-              placeholder=" "
-              label={localize('com_auth_password')}
-              labelClassName={authLabelClassName}
+              placeholder={localize('com_auth_password')}
               controlsClassName="right-2"
               buttonClassName={authSecretButtonClassName}
             />
@@ -176,9 +187,19 @@ const LoginForm: React.FC<TLoginFormProps> = ({ onSubmit, startupConfig, error, 
             type="submit"
             disabled={(requireCaptcha && !turnstileToken) || isSubmitting}
             variant="submit"
-            className="h-12 w-full rounded-2xl"
+            className="group relative h-14 w-full rounded-theme-control text-base"
           >
-            {isSubmitting ? <Spinner /> : localize('com_auth_continue')}
+            {isSubmitting ? (
+              <Spinner />
+            ) : (
+              <>
+                <span>{localize('com_auth_continue')}</span>
+                <ArrowRight
+                  className="absolute right-4 size-5 transition-transform duration-theme-normal group-hover:translate-x-0.5"
+                  aria-hidden="true"
+                />
+              </>
+            )}
           </Button>
         </div>
       </form>

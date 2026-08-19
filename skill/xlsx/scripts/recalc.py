@@ -301,7 +301,11 @@ def main():
 
     result = recalc(filename, timeout, force=force)
     print(json.dumps(result, indent=2))
-    sys.exit(1 if "error" in result else 0)
+    if "error" in result:
+        sys.exit(1)
+    if result.get("status") == "errors_found":
+        sys.exit(2)
+    sys.exit(0)
 
 
 if __name__ == "__main__":

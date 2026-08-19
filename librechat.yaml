@@ -18,7 +18,7 @@ summarization:
     minPrunableToolChars: 2000
 
 balance:
-  enabled: true
+  enabled: false
   startBalance: 0
   autoRefillEnabled: false
 
@@ -32,7 +32,7 @@ creditPackages:
     - id: starter
       label: Starter
       price: 500
-      credits: 10000
+      credits: 10000000
     - id: standard
       label: Standard
       price: 2000
@@ -46,18 +46,18 @@ interface:
   customWelcome: 'Welcome to BdREN Synapse!'
   fileSearch: true
   modelSelect: true
-  parameters: true
+  parameters: false
   presets: true
   prompts:
     use: true
     create: true
     share: false
     public: false
-  bookmarks: true
+  bookmarks: false
   multiConvo: true
   agents:
     use: true
-    create: true
+    create: false
     share: false
     public: false
   marketplace:
@@ -103,42 +103,8 @@ modelSpecs:
           Do not ask for passwords, payment information, or other unnecessary
           sensitive data. Do not ask for greetings or simple factual questions.
 
-    - name: gpt-4.1
-      label: GPT-4.1
-      askUserQuestion: true
-      preset:
-        endpoint: OpenAI
-        model: gpt-4.1
-        promptPrefix: |
-          You assist non-technical office users with emails, letters, reports,
-          research, document editing, meeting materials, and presentations.
-
-          Before answering, check whether an important detail is missing. When
-          it is, ask a short plain-language follow-up question with 2–4 options.
-          Allow the user to provide another answer and ask no more than three
-          clarification questions for one request.
-          Do not ask for passwords, payment information, or other unnecessary
-          sensitive data. Do not ask for greetings or simple factual questions.
-
-    - name: gpt-4o-mini
-      label: GPT-4o Mini
-      askUserQuestion: true
-      preset:
-        endpoint: OpenAI
-        model: gpt-4o-mini
-        promptPrefix: |
-          You assist non-technical office users with emails, letters, reports,
-          research, document editing, meeting materials, and presentations.
-
-          Before answering, check whether an important detail is missing. When
-          it is, ask a short plain-language follow-up question with 2–4 options.
-          Allow the user to provide another answer and ask no more than three
-          clarification questions for one request.
-          Do not ask for passwords, payment information, or other unnecessary
-          sensitive data. Do not ask for greetings or simple factual questions.
-
     - name: claude-sonnet-4-5
-      label: Claude Sonnet 4.5
+      label: Sonnet 4.5
       askUserQuestion: true
       preset:
         endpoint: Claude
@@ -149,7 +115,7 @@ modelSpecs:
         promptCache: true
 
     - name: claude-haiku-4-5
-      label: Claude Haiku 4.5
+      label: Haiku 4.5
       askUserQuestion: true
       preset:
         endpoint: Claude
@@ -166,13 +132,13 @@ modelSpecs:
           Do not ask for passwords, payment information, or other unnecessary
           sensitive data. Do not ask for greetings or simple factual questions.
 
-    - name: moonshotai-kimi-k2-6
-      label: Kimi K2.6
+    - name: nvidia/nemotron-3.5-lightning
+      label: nvidia/nemotron-3.5-lightning
       askUserQuestion: true
       preset:
         endpoint: OpenRouter
-        model: moonshotai/kimi-k2.6
-    
+        model: nvidia/nemotron-3.5-lightning
+        promptCache: true
     
     - name: google/gemini-3.1-flash-image
       label: Nano Banana 2
@@ -195,7 +161,6 @@ endpoints:
     # OCR'd document text) gets inserted into the conversation per call — without
     # this, a large-document read/edit can dump tens of thousands of characters
     # into context on one turn.
-    maxToolResultChars: 100000
     capabilities:
       - 'subagents'
       - 'execute_code'
@@ -203,7 +168,6 @@ endpoints:
       - 'artifacts'
       - 'skills'
       - 'tools'
-      - 'ocr'
       - 'context'
       - 'ask_user_question'
 
@@ -254,7 +218,7 @@ endpoints:
         x-librechat-body-parentmessageid: '{{LIBRECHAT_BODY_PARENTMESSAGEID}}'
       models:
         default:
-          - 'moonshotai/kimi-k2.6'
+          - 'google/gemma-4-31b-it'
         fetch: false
       titleConvo: true
       dropParams: ['stop']
