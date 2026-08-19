@@ -55,9 +55,13 @@ export * from './actions';
 export * from './prompts';
 /* Projects */
 export * from './projects';
+/* Conversations */
+export * from './conversations';
 /* Skills */
 export * from './skills';
 export * from './favorites';
+/* User */
+export * from './user';
 /* Agent Plugins */
 export * from './plugins';
 /* Endpoints */
@@ -72,6 +76,8 @@ export * from './tools';
 export * from './web';
 /* Langfuse */
 export * from './langfuse';
+/* Insights */
+export * from './insights';
 /* Cache */
 export * from './cache';
 /* Shared Links */

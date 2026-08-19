@@ -1,4 +1,7 @@
+import { createAgentTriggerLaneSequenceModel } from './triggerLaneSequence';
 import { createSkillSyncCredentialModel } from './skillSyncCredential';
+import { createAgentTriggerUserPurgeModel } from './triggerUserPurge';
+import { createAgentTriggerDeliveryModel } from './triggerDelivery';
 import { createSkillSyncStatusModel } from './skillSyncStatus';
 import { createConversationTagModel } from './conversationTag';
 import { createAgentCategoryModel } from './agentCategory';
@@ -100,6 +103,9 @@ export function createModels(mongoose: typeof import('mongoose')): {
   UsageReservation: ReturnType<typeof createUsageReservationModel>;
   UsageWarning: ReturnType<typeof createUsageWarningModel>;
   AdminScopeAssignment: ReturnType<typeof createAdminScopeAssignmentModel>;
+  AgentTriggerDelivery: ReturnType<typeof createAgentTriggerDeliveryModel>;
+  AgentTriggerLaneSequence: ReturnType<typeof createAgentTriggerLaneSequenceModel>;
+  AgentTriggerUserPurge: ReturnType<typeof createAgentTriggerUserPurgeModel>;
 } {
   const models = {
     User: createUserModel(mongoose),
@@ -150,6 +156,9 @@ export function createModels(mongoose: typeof import('mongoose')): {
     UsageReservation: createUsageReservationModel(mongoose),
     UsageWarning: createUsageWarningModel(mongoose),
     AdminScopeAssignment: createAdminScopeAssignmentModel(mongoose),
+    AgentTriggerDelivery: createAgentTriggerDeliveryModel(mongoose),
+    AgentTriggerLaneSequence: createAgentTriggerLaneSequenceModel(mongoose),
+    AgentTriggerUserPurge: createAgentTriggerUserPurgeModel(mongoose),
   };
   /**
    * Background index builds fail silently unless an 'index' listener is

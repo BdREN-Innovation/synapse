@@ -1,6 +1,6 @@
 const cookies = require('cookie');
 const jwksRsa = require('jwks-rsa');
-const { logger } = require('@librechat/data-schemas');
+const { logger, getTenantId, runAsSystem } = require('@librechat/data-schemas');
 const { CacheKeys, SystemRoles } = require('librechat-data-provider');
 const { Strategy: JwtStrategy, ExtractJwt } = require('passport-jwt');
 const {
@@ -12,12 +12,13 @@ const {
   buildAuthUserDocCacheKey,
   getAuthUserDocCacheMode,
   getCachedAuthUserDoc,
+  getValidOpenIdReuseUserId,
   invalidateCachedAuthUserDoc,
   setCachedAuthUserDoc,
   getHttpsProxyAgent,
   math,
 } = require('@librechat/api');
-const { updateUser, findUser } = require('~/models');
+const { updateUser, findUser, isAgentTriggerPrincipalActive } = require('~/models');
 const getLogStores = require('~/cache/getLogStores');
 
 const getOpenIdJwtAudience = () => {
@@ -54,6 +55,28 @@ const isOpenIdIssuerAllowed = (payload, openIdConfig) => {
 };
 
 const getAuthUserDocCacheStore = () => getLogStores(CacheKeys.AUTH_USER_DOC);
+
+const getUserId = (user) => user?.id?.toString?.() ?? user?._id?.toString?.();
+
+const getAuthUserCacheScope = (tenantId, userId) => {
+  if (tenantId) {
+    return { tenantId };
+  }
+  if (userId) {
+    return { userId };
+  }
+  return {};
+};
+
+const isUserInAuthCacheScope = (user, { tenantId, userId }) => {
+  if (tenantId) {
+    return (user?.tenantId || undefined) === tenantId;
+  }
+  if (userId) {
+    return getUserId(user) === userId;
+  }
+  return !user?.tenantId;
+};
 
 /**
  * @function openIdJwtLogin
@@ -108,10 +131,16 @@ const openIdJwtLogin = (openIdConfig) => {
         const authHeader = req.headers.authorization;
         const rawToken = authHeader?.replace('Bearer ', '');
         const openidIssuer = getOpenIdIssuer(payload, openIdConfig);
+        const tenantId = getTenantId();
+        const cookieHeader = req.headers.cookie;
+        const parsedCookies = cookieHeader ? cookies.parse(cookieHeader) : {};
+        const openIdReuseUserId = getValidOpenIdReuseUserId(parsedCookies.openid_user_id);
+        const authUserCacheScope = getAuthUserCacheScope(tenantId, openIdReuseUserId);
         const authUserCacheKey = buildAuthUserDocCacheKey({
           strategy: 'openid-jwt',
           subject: payload?.sub,
           issuer: openidIssuer,
+          ...authUserCacheScope,
         });
         const authUserCacheMode = getAuthUserDocCacheMode();
         const authUserCacheStore =
@@ -121,7 +150,10 @@ const openIdJwtLogin = (openIdConfig) => {
             ? await getCachedAuthUserDoc(authUserCacheStore, authUserCacheKey)
             : undefined;
 
-        const servedCachedUser = authUserCacheMode === 'on' && cachedUser;
+        const servedCachedUser =
+          authUserCacheMode === 'on' &&
+          cachedUser &&
+          isUserInAuthCacheScope(cachedUser, authUserCacheScope);
         const lookupResult = servedCachedUser
           ? { user: cachedUser, error: null, migration: false }
           : await findOpenIDUser({
@@ -141,6 +173,13 @@ const openIdJwtLogin = (openIdConfig) => {
 
         if (user) {
           user.id = user._id.toString();
+          if (!(await runAsSystem(() => isAgentTriggerPrincipalActive(user.id)))) {
+            done(null, false, {
+              message: 'Account deletion is in progress',
+              code: 'ACCOUNT_DELETION_IN_PROGRESS',
+            });
+            return;
+          }
           /** Absent on the full doc means local user; null skips getUserPrincipals' fallback lookup */
           user.idOnTheSource ??= null;
 
@@ -167,7 +206,7 @@ const openIdJwtLogin = (openIdConfig) => {
                 userId: user.id,
                 cacheKey: authUserCacheKey,
               });
-            } else if (!servedCachedUser) {
+            } else if (!servedCachedUser && isUserInAuthCacheScope(user, authUserCacheScope)) {
               await setCachedAuthUserDoc(authUserCacheStore, authUserCacheKey, user);
             }
           }
@@ -180,8 +219,6 @@ const openIdJwtLogin = (openIdConfig) => {
 
           /** Fallback to cookies for backward compatibility */
           if (!accessToken || !refreshToken || !idToken) {
-            const cookieHeader = req.headers.cookie;
-            const parsedCookies = cookieHeader ? cookies.parse(cookieHeader) : {};
             accessToken = accessToken || parsedCookies.openid_access_token;
             idToken = idToken || parsedCookies.openid_id_token;
             refreshToken = refreshToken || parsedCookies.refreshToken;

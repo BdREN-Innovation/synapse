@@ -20,6 +20,7 @@ jest.mock('./institution', () => ({
 const validateActiveInstitutionMock = jest.mocked(validateActiveInstitution);
 
 describe('preAuthTenantMiddleware', () => {
+  const originalTrustTenantHeader = process.env.TRUST_TENANT_HEADER;
   let req: {
     headers: Record<string, string | string[] | undefined>;
     ip?: string;
@@ -31,6 +32,7 @@ describe('preAuthTenantMiddleware', () => {
 
   beforeEach(() => {
     jest.clearAllMocks();
+    delete process.env.TRUST_TENANT_HEADER;
     req = { headers: {} };
     res = {
       status: jest.fn().mockReturnThis(),
@@ -40,6 +42,14 @@ describe('preAuthTenantMiddleware', () => {
       ok: true,
       institution: { tenantId: 'acme-corp', status: 'active', name: 'Acme' },
     });
+  });
+
+  afterAll(() => {
+    if (originalTrustTenantHeader === undefined) {
+      delete process.env.TRUST_TENANT_HEADER;
+      return;
+    }
+    process.env.TRUST_TENANT_HEADER = originalTrustTenantHeader;
   });
 
   it('calls next() without ALS context when no X-Tenant-Id header is present', () => {
@@ -63,7 +73,19 @@ describe('preAuthTenantMiddleware', () => {
     expect(capturedTenantId).toBeUndefined();
   });
 
-  it('wraps downstream in ALS context when X-Tenant-Id header is present', async () => {
+  it('ignores X-Tenant-Id unless the deployment explicitly trusts the header', () => {
+    req.headers = { 'x-tenant-id': 'attacker-selected' };
+    let capturedTenantId: string | undefined = 'sentinel';
+    const capturedNext: NextFunction = () => {
+      capturedTenantId = getTenantId();
+    };
+
+    preAuthTenantMiddleware(req as Request, res as Response, capturedNext);
+    expect(capturedTenantId).toBeUndefined();
+  });
+
+  it('wraps downstream in ALS context when the deployment trusts X-Tenant-Id', async () => {
+    process.env.TRUST_TENANT_HEADER = 'TRUE';
     req.headers = { 'x-tenant-id': 'acme-corp' };
     let capturedTenantId: string | undefined;
     const capturedNext: NextFunction = () => {
@@ -100,6 +122,7 @@ describe('preAuthTenantMiddleware', () => {
   });
 
   it('ignores __SYSTEM__ sentinel and logs warning', () => {
+    process.env.TRUST_TENANT_HEADER = 'true';
     req.headers = { 'x-tenant-id': '__SYSTEM__' };
     req.ip = '10.0.0.1';
     req.path = '/api/config';
@@ -117,6 +140,7 @@ describe('preAuthTenantMiddleware', () => {
   });
 
   it('ignores array-valued headers (Express can produce these)', () => {
+    process.env.TRUST_TENANT_HEADER = 'true';
     req.headers = { 'x-tenant-id': ['a', 'b'] as unknown as string };
     let capturedTenantId: string | undefined = 'sentinel';
     const capturedNext: NextFunction = () => {
@@ -128,6 +152,7 @@ describe('preAuthTenantMiddleware', () => {
   });
 
   it('ignores tenant IDs containing invalid characters and logs warning', () => {
+    process.env.TRUST_TENANT_HEADER = 'true';
     req.headers = { 'x-tenant-id': 'tenant:injected' };
     req.ip = '192.168.1.1';
     req.path = '/api/auth/login';
@@ -145,6 +170,7 @@ describe('preAuthTenantMiddleware', () => {
   });
 
   it('trims whitespace from tenant ID header', async () => {
+    process.env.TRUST_TENANT_HEADER = 'true';
     req.headers = { 'x-tenant-id': '  acme-corp  ' };
     let capturedTenantId: string | undefined;
     const capturedNext: NextFunction = () => {
@@ -157,6 +183,7 @@ describe('preAuthTenantMiddleware', () => {
   });
 
   it('rejects unknown institutions with 404', async () => {
+    process.env.TRUST_TENANT_HEADER = 'true';
     req.headers = { 'x-tenant-id': 'missing-tenant' };
     req.path = '/api/config';
     validateActiveInstitutionMock.mockResolvedValue({
@@ -176,6 +203,7 @@ describe('preAuthTenantMiddleware', () => {
   });
 
   it('rejects suspended institutions with 403', async () => {
+    process.env.TRUST_TENANT_HEADER = 'true';
     req.headers = { 'x-tenant-id': 'suspended-tenant' };
     req.path = '/api/config';
     validateActiveInstitutionMock.mockResolvedValue({
@@ -195,6 +223,7 @@ describe('preAuthTenantMiddleware', () => {
   });
 
   it('ignores tenant IDs exceeding max length and logs warning', () => {
+    process.env.TRUST_TENANT_HEADER = 'true';
     req.headers = { 'x-tenant-id': 'a'.repeat(200) };
     req.ip = '192.168.1.1';
     req.path = '/api/share/abc';

@@ -1,5 +1,6 @@
 import { logger } from '@librechat/data-schemas';
 import { createContentAggregator } from '@librechat/agents';
+import { ContentTypes, getRunStepDurationMs } from 'librechat-data-provider';
 import type { StandardGraph } from '@librechat/agents';
 import type { Agents } from 'librechat-data-provider';
 import type { Redis, Cluster } from 'ioredis';
@@ -43,6 +44,28 @@ import { instrumentIORedisClient, RedisUseCases } from '~/cache/redisTelemetry';
 import { RecoveredSteerPayloadMismatchError } from '~/stream/SteerRecovery';
 
 const CLIENT_REQUEST_ID_PATTERN = /^[A-Za-z0-9:_-]{1,128}$/;
+
+type ReasoningLabelOverlay = {
+  stepId: string;
+  revision: number;
+  label: string;
+  status: 'streaming' | 'complete';
+};
+
+type ReasoningAttemptOverlay = {
+  stepId: string;
+  attempts: number;
+  submittedChars?: number;
+};
+
+type ReasoningContentPart = Agents.MessageContentComplex & {
+  reasoning_label?: string;
+  reasoning_label_step_id?: string;
+  reasoning_label_attempts?: number;
+  reasoning_label_submitted_chars?: number;
+  reasoning_label_revision?: number;
+  reasoning_label_status?: 'streaming' | 'complete';
+};
 
 function assertCreateIdempotencyArguments(
   claimKey?: string,
@@ -306,7 +329,8 @@ const REPLACEMENT_RECEIPT_ACK_LUA =
  *          ...hsetPairs]
  *   Returns: [previousUserId | "", previousTenantId | "", createdAt, "",
  *             replacedCreatedAt | "", replacedStatus | "", replacedConversationId | "",
- *             replacedProviderAbortReady | ""]
+ *             replacedProviderAbortReady | "", replacedProviderExecutionId | "",
+ *             replacedProviderDrained | ""]
  *   Predecessor mismatch returns the latest retained epoch in the replaced
  *   position plus an eighth active flag and ninth verified flag ("1" | "0").
  *   Job-only metadata is empty when that epoch has outlived its hash. When all
@@ -328,6 +352,8 @@ const JOB_CREATE_LUA =
   'local replacedStatus = redis.call("HGET", KEYS[1], "status") ' +
   'local replacedConversationId = redis.call("HGET", KEYS[1], "conversationId") ' +
   'local replacedProviderAbortReady = redis.call("HGET", KEYS[1], "providerAbortReady") ' +
+  'local replacedProviderExecutionId = redis.call("HGET", KEYS[1], "providerExecutionId") ' +
+  'local replacedProviderDrained = redis.call("HGET", KEYS[1], "providerDrained") ' +
   'local replacedProtocol = redis.call("HGET", KEYS[1], "generationProtocolVersion") ' +
   'local MAX_SAFE_EPOCH = 9007199254740991 ' +
   'local function isSafeEpoch(value) return type(value) == "number" and value >= 0 ' +
@@ -336,6 +362,12 @@ const JOB_CREATE_LUA =
   'or value == "complete" or value == "error" or value == "aborted" end ' +
   'local replacedEpoch = tonumber(replacedCreatedAt) local previousCreatedAt = replacedEpoch ' +
   'if previousJobExists == 1 and (not isSafeEpoch(replacedEpoch) or not isValidJobStatus(replacedStatus)) then ' +
+  'return { "", "", "0", "replacement_receipt_corrupt" } end ' +
+  'if (replacedProviderExecutionId and not replacedProviderDrained) ' +
+  'or (replacedProviderDrained and not replacedProviderExecutionId) ' +
+  'or (replacedProviderExecutionId and (replacedProviderExecutionId == "" ' +
+  'or string.len(replacedProviderExecutionId) > 128)) ' +
+  'or (replacedProviderDrained and replacedProviderDrained ~= "0" and replacedProviderDrained ~= "1") then ' +
   'return { "", "", "0", "replacement_receipt_corrupt" } end ' +
   'local retainedEpochRaw = redis.call("GET", KEYS[7]) local retainedEpoch = tonumber(retainedEpochRaw) ' +
   'if retainedEpochRaw and not isSafeEpoch(retainedEpoch) then ' +
@@ -383,6 +415,10 @@ const JOB_CREATE_LUA =
   'or (previousJobExists == 1 and item.createdAt >= replacedEpoch) ' +
   'or (item.conversationId and type(item.conversationId) ~= "string") ' +
   'or (item.providerAbortReady ~= nil and type(item.providerAbortReady) ~= "boolean") ' +
+  'or (item.providerExecutionId ~= nil and (type(item.providerExecutionId) ~= "string" ' +
+  'or item.providerExecutionId == "" or string.len(item.providerExecutionId) > 128)) ' +
+  'or (item.providerDrained ~= nil and type(item.providerDrained) ~= "boolean") ' +
+  'or ((item.providerExecutionId ~= nil) ~= (item.providerDrained ~= nil)) ' +
   'or replacementSeen[tostring(item.createdAt)] then ' +
   'return { "", "", "0", "replacement_receipt_corrupt" } end ' +
   'lastReplacementEpoch = item.createdAt replacementSeen[tostring(item.createdAt)] = true ' +
@@ -407,6 +443,8 @@ const JOB_CREATE_LUA =
   'local replaced = { createdAt = replacedEpoch, status = replacedStatus } ' +
   'if replacedConversationId then replaced.conversationId = replacedConversationId end ' +
   'if replacedProviderAbortReady then replaced.providerAbortReady = replacedProviderAbortReady == "1" end ' +
+  'if replacedProviderExecutionId then replaced.providerExecutionId = replacedProviderExecutionId end ' +
+  'if replacedProviderDrained then replaced.providerDrained = replacedProviderDrained == "1" end ' +
   'replacementChain[#replacementChain + 1] = replaced replacementSeen[tostring(replacedEpoch)] = true end ' +
   'local recoveredSteerId = ARGV[5] local expectedRecovery = nil ' +
   'if recoveredSteerId ~= "" and ARGV[10] ~= "2" then return { "", "", "0", "recovery_payload_mismatch" } end ' +
@@ -510,7 +548,8 @@ const JOB_CREATE_LUA =
   'if claimTtl > 0 then redis.call("PEXPIRE", KEYS[10], claimTtl) end end ' +
   'return { previousUserId or "", previousTenantId or "", tostring(createdAt), "", ' +
   'replacedCreatedAt or "", replacedStatus or "", replacedConversationId or "", ' +
-  'replacedProviderAbortReady or "" }';
+  'replacedProviderAbortReady or "", replacedProviderExecutionId or "", ' +
+  'replacedProviderDrained or "" }';
 
 /**
  * Epoch-guarded field update. Terminal writes reclaim same-slot content in the
@@ -543,6 +582,23 @@ const JOB_UPDATE_LUA =
   'if runStepsTtl == 0 then redis.call("DEL", KEYS[3]) else redis.call("EXPIRE", KEYS[3], runStepsTtl) end ' +
   'end ' +
   'return 1';
+
+/** Exact provider-segment completion fence. A paused segment finishing after a
+ * resume cannot mark the resumed provider drained because its opaque id differs. */
+const PROVIDER_DRAIN_LUA =
+  'if redis.call("HGET", KEYS[1], "createdAt") ~= ARGV[1] then return 0 end ' +
+  'if redis.call("HGET", KEYS[1], "providerExecutionId") ~= ARGV[2] then return 0 end ' +
+  'redis.call("HSET", KEYS[1], "providerDrained", "1") return 1';
+
+/** Exact initial provider-start fence. The controller rechecks account
+ * deletion before this CAS; an abort/replacement that wins next prevents the
+ * provider from starting after destructive cleanup has begun. */
+const PROVIDER_BEGIN_LUA =
+  'if redis.call("HGET", KEYS[1], "createdAt") ~= ARGV[1] then return 0 end ' +
+  'if redis.call("HGET", KEYS[1], "providerExecutionId") ~= ARGV[2] then return 0 end ' +
+  'if redis.call("HGET", KEYS[1], "status") ~= "running" then return 0 end ' +
+  'if redis.call("HGET", KEYS[1], "providerDrained") ~= "1" then return 0 end ' +
+  'redis.call("HSET", KEYS[1], "providerDrained", "0") return 1';
 
 /** Single-winner promotion from abort-persistence pending to a consumable
  * terminal payload. Owner success/failure and stale-owner recovery share this
@@ -1734,6 +1790,15 @@ export class RedisJobStore implements IJobStoreV2 {
     ) {
       throw new Error('Invalid expected generation predecessor');
     }
+    const providerExecutionId = initialMetadata.providerExecutionId;
+    if (
+      providerExecutionId != null &&
+      (providerExecutionId.length === 0 || providerExecutionId.length > 128)
+    ) {
+      throw new Error('Invalid provider execution id');
+    }
+    const safeInitialMetadata = { ...initialMetadata };
+    delete safeInitialMetadata.providerDrained;
     let generationProtocolVersion: 1 | 2 = 1;
     if (
       initialMetadata.generationProtocolVersion === 1 ||
@@ -1744,7 +1809,7 @@ export class RedisJobStore implements IJobStoreV2 {
       generationProtocolVersion = 2;
     }
     const job: CreatedJobData = {
-      ...initialMetadata,
+      ...safeInitialMetadata,
       streamId,
       userId,
       ...(tenantId && { tenantId }),
@@ -1755,6 +1820,7 @@ export class RedisJobStore implements IJobStoreV2 {
       ...(idempotencyClientRequestId !== undefined && { idempotencyClientRequestId }),
       ...(recoveredSteerId !== undefined && { recoveredSteerId }),
       providerAbortReady: false,
+      ...(providerExecutionId != null && { providerDrained: true }),
       syncSent: false,
     };
     if (creationAttemptId != null) {
@@ -1886,6 +1952,18 @@ export class RedisJobStore implements IJobStoreV2 {
       previousOwner[7] !== ''
         ? previousOwner[7] === '1'
         : undefined;
+    const replacedProviderExecutionId =
+      Array.isArray(previousOwner) &&
+      typeof previousOwner[8] === 'string' &&
+      previousOwner[8] !== ''
+        ? previousOwner[8]
+        : undefined;
+    const replacedProviderDrained =
+      Array.isArray(previousOwner) &&
+      typeof previousOwner[9] === 'string' &&
+      previousOwner[9] !== ''
+        ? previousOwner[9] === '1'
+        : undefined;
     const replacedJob =
       replacedCreatedAt != null && Number.isFinite(replacedCreatedAt) && replacedStatus != null
         ? {
@@ -1900,6 +1978,18 @@ export class RedisJobStore implements IJobStoreV2 {
       Object.defineProperty(replacedJob, 'providerAbortReady', {
         value: replacedProviderAbortReady,
         enumerable: false,
+      });
+    }
+    if (replacedJob != null && replacedProviderExecutionId != null) {
+      Object.defineProperties(replacedJob, {
+        providerExecutionId: {
+          value: replacedProviderExecutionId,
+          enumerable: false,
+        },
+        providerDrained: {
+          value: replacedProviderDrained,
+          enumerable: false,
+        },
       });
     }
     const previousUserKeys =
@@ -2051,6 +2141,42 @@ export class RedisJobStore implements IJobStoreV2 {
     }
   }
 
+  async markProviderExecutionDrained(
+    streamId: string,
+    expectedCreatedAt: number,
+    providerExecutionId: string,
+  ): Promise<boolean> {
+    return (
+      Number(
+        await this.redis.eval(
+          PROVIDER_DRAIN_LUA,
+          1,
+          KEYS.job(streamId),
+          String(expectedCreatedAt),
+          providerExecutionId,
+        ),
+      ) === 1
+    );
+  }
+
+  async beginProviderExecution(
+    streamId: string,
+    expectedCreatedAt: number,
+    providerExecutionId: string,
+  ): Promise<boolean> {
+    return (
+      Number(
+        await this.redis.eval(
+          PROVIDER_BEGIN_LUA,
+          1,
+          KEYS.job(streamId),
+          String(expectedCreatedAt),
+          providerExecutionId,
+        ),
+      ) === 1
+    );
+  }
+
   async finalizeTerminalPersistence(
     streamId: string,
     expectedCreatedAt: number,
@@ -2080,7 +2206,8 @@ export class RedisJobStore implements IJobStoreV2 {
       left.createdAt === right.createdAt &&
       left.status === right.status &&
       left.userId === right.userId &&
-      left.tenantId === right.tenantId
+      left.tenantId === right.tenantId &&
+      left.providerDrained === right.providerDrained
     );
   }
 
@@ -2096,7 +2223,10 @@ export class RedisJobStore implements IJobStoreV2 {
     observedUserKeys: Set<string>,
   ): Promise<SerializableJobData | null> {
     const statusKey = job ? this.statusSetKey(job.status) : null;
-    const activeUserKey = job && statusKey != null ? KEYS.userJobs(job.userId, job.tenantId) : null;
+    const activeUserKey =
+      job && (statusKey != null || job.providerDrained === false)
+        ? KEYS.userJobs(job.userId, job.tenantId)
+        : null;
 
     if (this.isCluster) {
       const operations: Promise<unknown>[] = [
@@ -2790,6 +2920,18 @@ export class RedisJobStore implements IJobStoreV2 {
    * @returns Array of conversation IDs with active jobs
    */
   async getActiveJobIdsByUser(userId: string, tenantId?: string): Promise<string[]> {
+    return this.getJobIdsByUser(userId, tenantId, false);
+  }
+
+  async getCleanupBlockingJobIdsByUser(userId: string, tenantId?: string): Promise<string[]> {
+    return this.getJobIdsByUser(userId, tenantId, true);
+  }
+
+  private async getJobIdsByUser(
+    userId: string,
+    tenantId: string | undefined,
+    includeUndrained: boolean,
+  ): Promise<string[]> {
     const userJobsKey = KEYS.userJobs(userId, tenantId);
     const trackedIds = await this.redis.smembers(userJobsKey);
 
@@ -2809,8 +2951,18 @@ export class RedisJobStore implements IJobStoreV2 {
       // polling and can complete.
       const belongsToUser =
         job?.userId === userId && (job.tenantId ?? undefined) === (tenantId ?? undefined);
-      if (belongsToUser && job && (job.status === 'running' || job.status === 'requires_action')) {
-        if (job.status === 'requires_action' && isPendingActionStale(job)) {
+      if (
+        belongsToUser &&
+        job &&
+        (job.status === 'running' ||
+          job.status === 'requires_action' ||
+          (includeUndrained && job.providerDrained === false))
+      ) {
+        if (
+          job.status === 'requires_action' &&
+          isPendingActionStale(job) &&
+          !(includeUndrained && job.providerDrained === false)
+        ) {
           continue;
         }
         activeIds.push(streamId);
@@ -2828,8 +2980,14 @@ export class RedisJobStore implements IJobStoreV2 {
         if (
           currentBelongsToUser &&
           currentJob &&
-          (currentJob.status === 'running' || currentJob.status === 'requires_action') &&
-          !(currentJob.status === 'requires_action' && isPendingActionStale(currentJob))
+          (currentJob.status === 'running' ||
+            currentJob.status === 'requires_action' ||
+            (includeUndrained && currentJob.providerDrained === false)) &&
+          !(
+            currentJob.status === 'requires_action' &&
+            isPendingActionStale(currentJob) &&
+            !(includeUndrained && currentJob.providerDrained === false)
+          )
         ) {
           activeIds.push(streamId);
         }
@@ -2905,8 +3063,27 @@ export class RedisJobStore implements IJobStoreV2 {
     }
     const steers: Array<{ index: number; part: Agents.MessageContentComplex }> = [];
     const labelsByIndex = new Map<number, Agents.MessageContentComplex>();
+    const reasoningStepsByIndex = new Map<number, string>();
+    const reasoningAttemptsByIndex = new Map<number, ReasoningAttemptOverlay>();
+    const reasoningLabelsByIndex = new Map<number, ReasoningLabelOverlay>();
+    let reasoningAttemptHighWater = 0;
     for (const chunk of chunks) {
       const event = chunk as { event?: string; data?: unknown };
+      if (event.event === 'on_run_step') {
+        const step = event.data as {
+          id?: string;
+          index?: number;
+          stepDetails?: { message_creation?: { content_type?: string } };
+        };
+        if (
+          typeof step.id === 'string' &&
+          typeof step.index === 'number' &&
+          step.stepDetails?.message_creation?.content_type === ContentTypes.THINK
+        ) {
+          reasoningStepsByIndex.set(step.index, step.id);
+        }
+        continue;
+      }
       if (event.event === 'on_steer_applied') {
         const steerData = event.data as { index?: number; part?: Agents.MessageContentComplex };
         if (typeof steerData.index === 'number' && steerData.part != null) {
@@ -2919,9 +3096,62 @@ export class RedisJobStore implements IJobStoreV2 {
         if (typeof labelData.index === 'number' && labelData.part != null) {
           labelsByIndex.set(labelData.index, labelData.part);
         }
+        continue;
+      }
+      if (event.event === 'on_reasoning_label_attempt') {
+        const attempt = event.data as {
+          index?: number;
+          stepId?: string;
+          attempts?: number;
+          submittedChars?: number;
+        };
+        if (
+          typeof attempt.index === 'number' &&
+          typeof attempt.stepId === 'string' &&
+          typeof attempt.attempts === 'number'
+        ) {
+          reasoningAttemptsByIndex.set(attempt.index, {
+            stepId: attempt.stepId,
+            attempts: attempt.attempts,
+            ...(typeof attempt.submittedChars === 'number' && {
+              submittedChars: attempt.submittedChars,
+            }),
+          });
+          reasoningAttemptHighWater = Math.max(reasoningAttemptHighWater, attempt.attempts);
+        }
+        continue;
+      }
+      if (event.event === 'on_reasoning_label') {
+        const labelData = event.data as {
+          index?: number;
+          stepId?: string;
+          revision?: number;
+          label?: string;
+          status?: 'streaming' | 'complete';
+        };
+        if (
+          typeof labelData.index === 'number' &&
+          typeof labelData.stepId === 'string' &&
+          typeof labelData.revision === 'number' &&
+          typeof labelData.label === 'string'
+        ) {
+          reasoningLabelsByIndex.set(labelData.index, {
+            stepId: labelData.stepId,
+            revision: labelData.revision,
+            label: labelData.label,
+            status: labelData.status === 'complete' ? 'complete' : 'streaming',
+          });
+        }
+        continue;
       }
     }
-    if (steers.length === 0 && labelsByIndex.size === 0) {
+    if (
+      steers.length === 0 &&
+      labelsByIndex.size === 0 &&
+      reasoningStepsByIndex.size === 0 &&
+      reasoningAttemptHighWater === 0 &&
+      reasoningLabelsByIndex.size === 0
+    ) {
       return parts;
     }
     const inserts = [
@@ -2932,6 +3162,46 @@ export class RedisJobStore implements IJobStoreV2 {
     const merged = [...parts];
     for (const insert of inserts) {
       merged.splice(Math.min(insert.index, merged.length), 0, insert.part);
+    }
+    const reasoningIndices = new Set([
+      ...reasoningStepsByIndex.keys(),
+      ...reasoningAttemptsByIndex.keys(),
+      ...reasoningLabelsByIndex.keys(),
+    ]);
+    for (const index of reasoningIndices) {
+      const part = merged[index] as ReasoningContentPart | undefined;
+      if (part?.type !== ContentTypes.THINK) {
+        continue;
+      }
+      const attempt = reasoningAttemptsByIndex.get(index);
+      const label = reasoningLabelsByIndex.get(index);
+      const stepId = reasoningStepsByIndex.get(index) ?? attempt?.stepId ?? label?.stepId;
+      if (stepId == null) {
+        continue;
+      }
+      const updated: ReasoningContentPart = { ...part };
+      if (updated.reasoning_label_step_id != null && updated.reasoning_label_step_id !== stepId) {
+        delete updated.reasoning_label;
+        delete updated.reasoning_label_revision;
+        delete updated.reasoning_label_status;
+        delete updated.reasoning_label_submitted_chars;
+      }
+      updated.reasoning_label_step_id = stepId;
+      if (reasoningAttemptHighWater > 0) {
+        updated.reasoning_label_attempts = Math.max(
+          updated.reasoning_label_attempts ?? 0,
+          reasoningAttemptHighWater,
+        );
+      }
+      if (attempt?.stepId === stepId && attempt.submittedChars != null) {
+        updated.reasoning_label_submitted_chars = attempt.submittedChars;
+      }
+      if (label?.stepId === stepId) {
+        updated.reasoning_label = label.label;
+        updated.reasoning_label_revision = label.revision;
+        updated.reasoning_label_status = label.status;
+      }
+      merged[index] = updated;
     }
     return merged;
   }
@@ -3069,6 +3339,18 @@ export class RedisJobStore implements IJobStoreV2 {
     // Use the same content aggregator as live streaming
     const { contentParts, aggregateContent } = createContentAggregator();
 
+    // Step ID -> content index, rebuilt from the replayed `on_run_step`
+    // payloads. Those carry the index the offset wrappers shifted, whereas a
+    // closure event was stored unshifted (the wrappers clone only
+    // `ON_RUN_STEP`/`ON_AGENT_UPDATE`), so a closure must be resolved by ID
+    // rather than by its own index — otherwise a run containing a steer or
+    // HITL resume stamps the status onto the wrong slot.
+    const replayedStepIndices = new Map<string, number>();
+    const reasoningStepsByIndex = new Map<number, string>();
+    const reasoningAttemptsByIndex = new Map<number, ReasoningAttemptOverlay>();
+    const reasoningLabelsByIndex = new Map<number, ReasoningLabelOverlay>();
+    let reasoningAttemptHighWater = 0;
+
     // Valid event types for content aggregation
     const validEvents = new Set([
       'on_run_step',
@@ -3108,13 +3390,146 @@ export class RedisJobStore implements IJobStoreV2 {
         continue;
       }
 
+      // Attempt reservations are durable but intentionally non-rendering.
+      // Overlay their run-cumulative high-water mark after replay so later
+      // deltas cannot erase the cost cap before a HITL resume.
+      if (event.event === 'on_reasoning_label_attempt') {
+        const attempt = event.data as {
+          index?: number;
+          stepId?: string;
+          attempts?: number;
+          submittedChars?: number;
+        };
+        if (
+          typeof attempt.index === 'number' &&
+          typeof attempt.stepId === 'string' &&
+          typeof attempt.attempts === 'number'
+        ) {
+          reasoningAttemptsByIndex.set(attempt.index, {
+            stepId: attempt.stepId,
+            attempts: attempt.attempts,
+            ...(typeof attempt.submittedChars === 'number' && {
+              submittedChars: attempt.submittedChars,
+            }),
+          });
+          reasoningAttemptHighWater = Math.max(reasoningAttemptHighWater, attempt.attempts);
+        }
+        continue;
+      }
+
+      // Reasoning labels patch an existing THINK part and never shift indices.
+      // Retain the latest update until replay is complete: a later reasoning
+      // delta rebuilds the THINK object and would otherwise erase metadata
+      // from an earlier label event.
+      if (event.event === 'on_reasoning_label') {
+        const labelData = event.data as {
+          index?: number;
+          stepId?: string;
+          revision?: number;
+          label?: string;
+          status?: 'streaming' | 'complete';
+        };
+        if (
+          typeof labelData.index === 'number' &&
+          typeof labelData.stepId === 'string' &&
+          typeof labelData.revision === 'number' &&
+          typeof labelData.label === 'string'
+        ) {
+          reasoningLabelsByIndex.set(labelData.index, {
+            stepId: labelData.stepId,
+            revision: labelData.revision,
+            label: labelData.label,
+            status: labelData.status === 'complete' ? 'complete' : 'streaming',
+          });
+        }
+        continue;
+      }
+
+      // Step closures are host-authored like steers and labels: the SDK
+      // aggregator has no notion of the event, so the terminal status is
+      // stamped onto the part the replayed steps already rebuilt. Resolved by
+      // step ID against the replayed indices, never by the closure's own
+      // index — see `replayedStepIndices`. Chronology guarantees the step's
+      // `on_run_step` was replayed first.
+      if (event.event === 'on_run_step_closed') {
+        const closed = event.data as {
+          id?: string;
+          status?: Agents.RunStepClosedStatus;
+          created_at?: number;
+          closed_at?: number;
+        };
+        const index = closed.id != null ? replayedStepIndices.get(closed.id) : undefined;
+        const part = index != null ? contentParts[index] : undefined;
+        if (closed.status && part?.type === ContentTypes.TOOL_CALL && part.tool_call) {
+          part.tool_call.runStepStatus = closed.status;
+          const durationMs = getRunStepDurationMs(closed);
+          if (durationMs != null) {
+            part.tool_call.runStepDurationMs = durationMs;
+          }
+        }
+        continue;
+      }
+
       if (!validEvents.has(event.event)) {
         continue;
+      }
+
+      if (event.event === 'on_run_step') {
+        const step = event.data as {
+          id?: string;
+          index?: number;
+          stepDetails?: { message_creation?: { content_type?: string } };
+        };
+        if (step.id != null && typeof step.index === 'number') {
+          replayedStepIndices.set(step.id, step.index);
+          if (step.stepDetails?.message_creation?.content_type === ContentTypes.THINK) {
+            reasoningStepsByIndex.set(step.index, step.id);
+          }
+        }
       }
 
       // Pass event string directly - GraphEvents values are lowercase strings
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       aggregateContent({ event: event.event as any, data: event.data as any });
+    }
+
+    const reasoningIndices = new Set([
+      ...reasoningStepsByIndex.keys(),
+      ...reasoningAttemptsByIndex.keys(),
+      ...reasoningLabelsByIndex.keys(),
+    ]);
+    for (const index of reasoningIndices) {
+      const part = contentParts[index] as ReasoningContentPart | undefined;
+      if (part?.type !== ContentTypes.THINK) {
+        continue;
+      }
+      const attempt = reasoningAttemptsByIndex.get(index);
+      const label = reasoningLabelsByIndex.get(index);
+      const stepId = reasoningStepsByIndex.get(index) ?? attempt?.stepId ?? label?.stepId;
+      if (stepId == null) {
+        continue;
+      }
+      if (part.reasoning_label_step_id != null && part.reasoning_label_step_id !== stepId) {
+        delete part.reasoning_label;
+        delete part.reasoning_label_revision;
+        delete part.reasoning_label_status;
+        delete part.reasoning_label_submitted_chars;
+      }
+      part.reasoning_label_step_id = stepId;
+      if (reasoningAttemptHighWater > 0) {
+        part.reasoning_label_attempts = Math.max(
+          part.reasoning_label_attempts ?? 0,
+          reasoningAttemptHighWater,
+        );
+      }
+      if (attempt?.stepId === stepId && attempt.submittedChars != null) {
+        part.reasoning_label_submitted_chars = attempt.submittedChars;
+      }
+      if (label?.stepId === stepId) {
+        part.reasoning_label = label.label;
+        part.reasoning_label_revision = label.revision;
+        part.reasoning_label_status = label.status;
+      }
     }
 
     // Filter out undefined entries
@@ -4065,6 +4480,8 @@ export class RedisJobStore implements IJobStoreV2 {
       preemptCapable: data.preemptCapable != null ? data.preemptCapable === '1' : undefined,
       providerAbortReady:
         data.providerAbortReady != null ? data.providerAbortReady === '1' : undefined,
+      providerExecutionId: data.providerExecutionId || undefined,
+      providerDrained: data.providerDrained != null ? data.providerDrained === '1' : undefined,
       titleEvent: data.titleEvent || undefined,
       replayEvents: data.replayEvents || undefined,
       contextUsage: data.contextUsage || undefined,
@@ -4127,6 +4544,12 @@ export class RedisJobStore implements IJobStoreV2 {
           (candidate.conversationId != null && typeof candidate.conversationId !== 'string') ||
           (candidate.providerAbortReady != null &&
             typeof candidate.providerAbortReady !== 'boolean') ||
+          (candidate.providerExecutionId != null &&
+            (typeof candidate.providerExecutionId !== 'string' ||
+              candidate.providerExecutionId.length === 0 ||
+              candidate.providerExecutionId.length > 128)) ||
+          (candidate.providerDrained != null && typeof candidate.providerDrained !== 'boolean') ||
+          (candidate.providerExecutionId != null) !== (candidate.providerDrained != null) ||
           seen.has(candidate.createdAt as number)
         ) {
           throw new Error('Invalid generation replacement receipt');
@@ -4143,6 +4566,16 @@ export class RedisJobStore implements IJobStoreV2 {
         if (candidate.providerAbortReady != null) {
           Object.defineProperty(receipt, 'providerAbortReady', {
             value: candidate.providerAbortReady,
+            enumerable: false,
+          });
+        }
+        if (candidate.providerExecutionId != null) {
+          Object.defineProperty(receipt, 'providerExecutionId', {
+            value: candidate.providerExecutionId,
+            enumerable: false,
+          });
+          Object.defineProperty(receipt, 'providerDrained', {
+            value: candidate.providerDrained,
             enumerable: false,
           });
         }

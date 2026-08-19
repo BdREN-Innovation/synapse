@@ -9,17 +9,25 @@ import {
   OGDialogContent,
   OGDialogDescription,
 } from '@librechat/client';
-import type { Agents, TAttachment, TMessage, TMessageContentParts } from 'librechat-data-provider';
+import type {
+  Agents,
+  TAttachment,
+  TMessage,
+  TMessageContentParts,
+  PartMetadata,
+} from 'librechat-data-provider';
 import type { PartWithIndex } from '~/components/Chat/Messages/Content/ParallelContent';
 import type { SubagentTickerLine } from '~/utils/subagentContent';
 import ToolCallGroup from '~/components/Chat/Messages/Content/ToolCallGroup';
 import MarkdownLite from '~/components/Chat/Messages/Content/MarkdownLite';
 import ToolApproval from '~/components/Chat/Messages/Content/ToolApproval';
+import SubagentThreadLink from '~/components/Chat/SubagentThreadLink';
 import { cn, groupSequentialToolCalls, parseToolName } from '~/utils';
 import Container from '~/components/Chat/Messages/Content/Container';
 import ToolCall from '~/components/Chat/Messages/Content/ToolCall';
 import { MessageContext } from '~/Providers/MessageContext';
 import MessageIcon from '~/components/Share/MessageIcon';
+import { parseSubagentBackgroundHandle } from './handle';
 import { subagentProgressByToolCallId } from '~/store';
 import { useAgentsMapContext } from '~/Providers';
 import { useMCPServerNames } from '~/hooks/MCP';
@@ -36,6 +44,9 @@ interface SubagentCallProps {
    *  tool_call's `progress` and any terminal subagent envelope — to decide
    *  whether the subagent is `running`, `cancelled`, or `finished`. */
   isSubmitting?: boolean;
+  /** Terminal lifecycle status from `on_run_step_closed`, when the run
+   *  emitted one. Authoritative over the `isSubmitting` inference. */
+  runStepStatus?: PartMetadata['runStepStatus'];
   args?: string | Record<string, unknown>;
   output?: string | null;
   attachments?: TAttachment[];
@@ -165,6 +176,7 @@ export default function SubagentCall({
   toolCallId,
   initialProgress,
   isSubmitting = false,
+  runStepStatus,
   args,
   output,
   attachments,
@@ -176,6 +188,10 @@ export default function SubagentCall({
   const agentsMap = useAgentsMapContext();
   const [open, setOpen] = useState(false);
   const [promptExpanded, setPromptExpanded] = useState(false);
+  const backgroundHandle = useMemo(
+    () => parseSubagentBackgroundHandle(output, args),
+    [output, args],
+  );
 
   const subagentType = progress?.subagentType ?? extractSubagentType(args);
   const isSelfSpawn = subagentType === 'self';
@@ -198,9 +214,25 @@ export default function SubagentCall({
    * - `running`: the parent is still streaming and no terminal signal has
    *   arrived yet.
    */
-  const hasError = progress?.status === 'error';
-  const finished = initialProgress >= 1 || progress?.status === 'stop' || hasError;
-  const cancelled = !isSubmitting && !finished;
+  /**
+   * A closed run step resolves the tri-state directly. It is the only signal
+   * that distinguishes "this subagent was stopped" from "the parent stream
+   * ended for some other reason", which the `!isSubmitting` inference below
+   * cannot tell apart. That inference stays as the fallback for messages
+   * saved before `on_run_step_closed` and endpoints that do not emit it.
+   */
+  const isClosed = runStepStatus != null;
+  /**
+   * An explicit `cancelled` close outranks a live `error` phase: aborting a
+   * child can surface through its execution as an error, and the run's own
+   * status is the authority on why it stopped.
+   */
+  const hasError =
+    (progress?.status === 'error' || runStepStatus === 'failed') && runStepStatus !== 'cancelled';
+  const finished = isClosed
+    ? runStepStatus !== 'cancelled'
+    : initialProgress >= 1 || progress?.status === 'stop' || hasError;
+  const cancelled = isClosed ? runStepStatus === 'cancelled' : !isSubmitting && !finished;
   const running = !finished && !cancelled;
 
   /**
@@ -431,7 +463,7 @@ export default function SubagentCall({
         </MessageContext.Provider>
       );
     }
-    if (output) {
+    if (output && backgroundHandle == null) {
       /** Fallback: no aggregated content parts but the backend
        *  wrote a final tool_call output. Happens for older
        *  subagent runs recorded before the event forwarder
@@ -541,11 +573,19 @@ export default function SubagentCall({
           )}
         >
           <div className="shrink-0 px-6 pb-3 pr-14 pt-6">
-            <OGDialogTitle>
-              {isSelfSpawn
-                ? localize('com_ui_subagent_dialog_title_self')
-                : localize('com_ui_subagent_dialog_title', { 0: subagentType })}
-            </OGDialogTitle>
+            <div className="flex min-w-0 items-center justify-between gap-3">
+              <OGDialogTitle>
+                {isSelfSpawn
+                  ? localize('com_ui_subagent_dialog_title_self')
+                  : localize('com_ui_subagent_dialog_title', { 0: subagentType })}
+              </OGDialogTitle>
+              {backgroundHandle != null && (
+                <SubagentThreadLink
+                  threadId={backgroundHandle.subagent_thread_id}
+                  relation="child"
+                />
+              )}
+            </div>
             <OGDialogDescription className="sr-only">
               {localize('com_ui_subagent_dialog_description')}
             </OGDialogDescription>
