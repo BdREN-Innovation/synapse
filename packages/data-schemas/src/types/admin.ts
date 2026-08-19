@@ -5,42 +5,16 @@ import type {
   InstitutionInviteStatus,
   InstitutionMembershipStatus,
 } from '~/common';
-import type { SystemCapabilities } from '~/admin/capabilities';
 
-/* ── Capability types ───────────────────────────────────────────────── */
+/* ── Capability types (defined alongside the SystemCapabilities constant) ── */
 
-/** Base capabilities derived from the SystemCapabilities constant. */
-export type BaseSystemCapability = (typeof SystemCapabilities)[keyof typeof SystemCapabilities];
-
-/** Principal types that can receive config overrides. */
-export type ConfigAssignTarget = 'user' | 'group' | 'role';
-
-/** Top-level keys of the configSchema from librechat.yaml. */
-export type ConfigSection = string & keyof TCustomConfig;
-
-/** Section-level config capabilities derived from configSchema keys. */
-type ConfigSectionCapability = `manage:configs:${ConfigSection}` | `read:configs:${ConfigSection}`;
-
-/** Principal-scoped config assignment capabilities. */
-type ConfigAssignCapability = `assign:configs:${ConfigAssignTarget}`;
-
-/**
- * Union of all valid capability strings:
- * - Base capabilities from SystemCapabilities
- * - Section-level config capabilities (manage:configs:<section>, read:configs:<section>)
- * - Config assignment capabilities (assign:configs:<user|group|role>)
- */
-export type SystemCapability =
-  | BaseSystemCapability
-  | ConfigSectionCapability
-  | ConfigAssignCapability;
-
-/** UI grouping of capabilities for the admin panel's capability editor. */
-export type CapabilityCategory = {
-  key: string;
-  labelKey: string;
-  capabilities: BaseSystemCapability[];
-};
+export type {
+  BaseSystemCapability,
+  ConfigAssignTarget,
+  ConfigSection,
+  SystemCapability,
+  CapabilityCategory,
+} from '~/admin/capabilities';
 
 /* ── Admin API response types ───────────────────────────────────────── */
 
@@ -69,6 +43,20 @@ export type AdminConfigResponse = {
 
 export type AdminConfigDeleteResponse = {
   success: boolean;
+};
+
+export type AdminUserRecord = {
+  id: string;
+  accountScope: 'institution' | 'standalone';
+  tenantId?: string;
+  institutionName: string;
+  kind: 'user' | 'invite';
+  name: string;
+  email: string;
+  role: string;
+  status: string;
+  createdAt?: string;
+  updatedAt?: string;
 };
 
 /* ── Audit log taxonomy ─────────────────────────────────────────────── */
@@ -104,6 +92,7 @@ export const AUDIT_ACTIONS = [
   'grant.assigned',
   'grant.removed',
   'member.invited',
+  'member.credits_granted',
   'member.invite_resent',
   'member.invite_revoked',
   'member.suspended',
@@ -119,6 +108,7 @@ export const AUDIT_ACTIONS = [
   'institution.updated',
   'institution.suspended',
   'institution.reactivated',
+  'institution.closed',
   'institution.seat_limit_changed',
   'institution.seat_limit_rejected',
   'institution.admin_appointed',
@@ -134,6 +124,7 @@ export const AUDIT_ACTION_CATEGORY: Record<AuditAction, AuditCategory> = {
   'grant.assigned': 'grant',
   'grant.removed': 'grant',
   'member.invited': 'member',
+  'member.credits_granted': 'member',
   'member.invite_resent': 'member',
   'member.invite_revoked': 'member',
   'member.suspended': 'member',
@@ -149,6 +140,7 @@ export const AUDIT_ACTION_CATEGORY: Record<AuditAction, AuditCategory> = {
   'institution.updated': 'institution',
   'institution.suspended': 'institution',
   'institution.reactivated': 'institution',
+  'institution.closed': 'institution',
   'institution.seat_limit_changed': 'institution',
   'institution.seat_limit_rejected': 'institution',
   'institution.admin_appointed': 'institution',

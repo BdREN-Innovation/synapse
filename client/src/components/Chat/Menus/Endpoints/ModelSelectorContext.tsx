@@ -1,6 +1,11 @@
 import React, { createContext, useContext, useState, useMemo, useCallback } from 'react';
 import debounce from 'lodash/debounce';
-import { EModelEndpoint, isAgentsEndpoint, isAssistantsEndpoint } from 'librechat-data-provider';
+import {
+  EModelEndpoint,
+  PermissionBits,
+  isAgentsEndpoint,
+  isAssistantsEndpoint,
+} from 'librechat-data-provider';
 import type * as t from 'librechat-data-provider';
 import type { Endpoint, SelectedValues } from '~/common';
 import {
@@ -28,6 +33,7 @@ type ModelSelectorContextType = {
   agentsMap: t.TAgentsMap | undefined;
   assistantsMap: t.TAssistantsMap | undefined;
   endpointsConfig: t.TEndpointsConfig;
+  startupConfig: t.TStartupConfig | undefined;
 
   // Functions
   endpointRequiresUserKey: (endpoint: string) => boolean;
@@ -82,11 +88,27 @@ export function ModelSelectorProvider({ children, startupConfig }: ModelSelector
   }, [startupConfig, agentsMap]);
 
   const permissionLevel = useAgentDefaultPermissionLevel();
-  const { data: agents = null } = useListAgentsQuery(
-    { requiredPermission: permissionLevel },
-    {
-      select: (data) => data?.data,
+  /**
+   * Always query the VIEW scope so this shares one cache entry (and one paginated walk)
+   * with `useAgentsMap` and `useMentions`. Asking for EDIT here spawned a second full
+   * fetch under its own key, holding a duplicate copy of the whole agent list. The
+   * marketplace's "my agents" framing is preserved by filtering on `isEditable`, which
+   * the list endpoint resolves from the same ACL read it already performs.
+   */
+  const wantsEditableOnly = permissionLevel === PermissionBits.EDIT;
+  const selectAgents = useCallback(
+    (data: t.AgentListResponse) => {
+      const list = data?.data;
+      if (!wantsEditableOnly) {
+        return list;
+      }
+      return list?.filter((agent) => agent.isEditable !== false);
     },
+    [wantsEditableOnly],
+  );
+  const { data: agents = null } = useListAgentsQuery(
+    { requiredPermission: PermissionBits.VIEW },
+    { select: selectAgents },
   );
 
   const { mappedEndpoints, endpointRequiresUserKey } = useEndpoints({
@@ -251,6 +273,7 @@ export function ModelSelectorProvider({ children, startupConfig }: ModelSelector
       assistantsMap,
       mappedEndpoints,
       endpointsConfig,
+      startupConfig,
       handleSelectSpec,
       handleSelectModel,
       setSelectedValues,
@@ -270,6 +293,7 @@ export function ModelSelectorProvider({ children, startupConfig }: ModelSelector
       assistantsMap,
       mappedEndpoints,
       endpointsConfig,
+      startupConfig,
       handleSelectSpec,
       handleSelectModel,
       setSelectedValues,

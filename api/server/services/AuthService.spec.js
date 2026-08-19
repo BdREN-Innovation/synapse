@@ -558,6 +558,31 @@ describe('registerUser', () => {
     expect(completeInviteAcceptance).not.toHaveBeenCalled();
     expect(createUser).not.toHaveBeenCalled();
   });
+
+  it('normalizes mixed-case emails when issuing the verification token and link', async () => {
+    checkEmailConfig.mockReturnValue(true);
+
+    const result = await registerUser({
+      ...registrationPayload,
+      email: 'Mixed.Case@Example.com',
+    });
+
+    expect(result.status).toBe(200);
+    expect(createToken).toHaveBeenCalledWith(
+      expect.objectContaining({
+        email: 'mixed.case@example.com',
+        type: 'email_verification',
+      }),
+    );
+    expect(sendEmail).toHaveBeenCalledWith(
+      expect.objectContaining({
+        email: 'mixed.case@example.com',
+        payload: expect.objectContaining({
+          verificationLink: expect.stringContaining(encodeURIComponent('mixed.case@example.com')),
+        }),
+      }),
+    );
+  });
 });
 
 describe('verifyEmail public response handling', () => {

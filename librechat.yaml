@@ -1,64 +1,265 @@
+# Local configuration aligned with the enabled endpoints and models in `.env`.
+# Keep credentials and deployment secrets in `.env`; this file contains only
+# non-secret UI/model configuration.
 version: 1.3.13
+
 cache: true
 
-interface:
-  customWelcome: 'Welcome to BdREN Synapse. Ask me to draft, analyze, or convert your documents.'
-  privacyPolicy:
-    externalUrl: 'https://www.bdren.net.bd/privacy'
-    openNewTab: true
-  termsOfService:
-    externalUrl: 'https://www.bdren.net.bd/terms'
-    openNewTab: true
-  # Hide features noob office users do not need (trim to taste):
-  prompts: true
-  bookmarks: true
-  multiConvo: false
-  agents: true
+# Prevents old large tool results (e.g. full document dumps from execute_code,
+# OCR'd PDF text, or `context`-attached files) from compounding token cost on
+# every subsequent turn of a long editing session.
+summarization:
+  enabled: true
+  contextPruning:
+    enabled: true
+    keepLastAssistants: 3
+    softTrimRatio: 0.7
+    hardClearRatio: 0.9
+    minPrunableToolChars: 2000
 
-registration:
-  socialLogins: []
-  # allowedDomains:              # optional: restrict signup to member universities
-  #   - 'bdren.net.bd'
-  #   - 'gub.edu.bd'
+balance:
+  enabled: false
+  startBalance: 0
+  autoRefillEnabled: false
+
+creditPackages:
+  currency: BDT
+  list:
+    - id: waiver
+      label: Waived / Complimentary
+      price: 0
+      credits: 1000000
+    - id: starter
+      label: Starter
+      price: 500
+      credits: 10000000
+    - id: standard
+      label: Standard
+      price: 2000
+      credits: 25000000
+    - id: premium
+      label: Premium
+      price: 5000
+      credits: 75000000
+
+interface:
+  customWelcome: 'Welcome to BdREN Synapse!'
+  fileSearch: true
+  modelSelect: true
+  parameters: false
+  presets: true
+  prompts:
+    use: true
+    create: true
+    share: false
+    public: false
+  bookmarks: false
+  multiConvo: true
+  agents:
+    use: true
+    create: false
+    share: false
+    public: false
+  marketplace:
+    use: false
+  fileCitations: true
+
+modelSpecs:
+  enforce: true
+  prioritize: true
+  list:
+    - name: glm-4.6v
+      label: BdREN AI (GLM 4.6V)
+      askUserQuestion: true
+      group: BdREN AI
+      preset:
+        endpoint: BdREN AI
+        model: glm-4.6v
+
+    - name: office-assistant
+      label: Office Assistant
+      description: General office assistant with document, spreadsheet, presentation, mail, and image delegation.
+      default: true
+      group: Agents
+      preset:
+        endpoint: agents
+        agent_id: agent_office_assistant
+
+    - name: gpt-5.6-luna
+      label: GPT-5.6 Luna
+      askUserQuestion: true
+      preset:
+        endpoint: OpenAI
+        model: gpt-5.6-luna
+        useResponsesApi: true
+        promptPrefix: |
+          You assist non-technical office users with emails, letters, reports,
+          research, document editing, meeting materials, and presentations.
+
+          Before answering, check whether an important detail is missing. When
+          it is, ask a short plain-language follow-up question with 2–4 options.
+          Allow the user to provide another answer and ask no more than three
+          clarification questions for one request.
+          Do not ask for passwords, payment information, or other unnecessary
+          sensitive data. Do not ask for greetings or simple factual questions.
+
+    - name: claude-sonnet-4-5
+      label: Sonnet 4.5
+      askUserQuestion: true
+      preset:
+        endpoint: Claude
+        model: claude-sonnet-4-5
+        # Cache reads run ~10x cheaper than fresh input (tx.ts cacheTokenValues) —
+        # worth enabling by default since document-editing sessions repeatedly
+        # resend large, mostly-unchanged file/context content across turns.
+        promptCache: true
+
+    - name: claude-haiku-4-5
+      label: Haiku 4.5
+      askUserQuestion: true
+      preset:
+        endpoint: Claude
+        model: claude-haiku-4-5
+        promptCache: true
+        promptPrefix: |
+          You assist non-technical office users with emails, letters, reports,
+          research, document editing, meeting materials, and presentations.
+
+          Before answering, check whether an important detail is missing. When
+          it is, ask a short plain-language follow-up question with 2–4 options.
+          Allow the user to provide another answer and ask no more than three
+          clarification questions for one request.
+          Do not ask for passwords, payment information, or other unnecessary
+          sensitive data. Do not ask for greetings or simple factual questions.
+
+    - name: nvidia/nemotron-3.5-lightning
+      label: nvidia/nemotron-3.5-lightning
+      askUserQuestion: true
+      preset:
+        endpoint: OpenRouter
+        model: nvidia/nemotron-3.5-lightning
+        promptCache: true
+    
+    - name: google/gemini-3.1-flash-image
+      label: Nano Banana 2
+      preset:
+        endpoint: OpenRouter Image
+        model: google/gemini-3.1-flash-image
+        streaming: false
+
+    - name: z-ai-glm-5-2
+      label: GLM 5.2
+      askUserQuestion: true
+      preset:
+        endpoint: NVIDIA
+        model: z-ai/glm-5.2
 
 endpoints:
   agents:
+    allowedProviders: ['OpenAI', 'Claude', 'BdREN AI', 'OpenRouter', 'OpenRouter Image', 'anthropic']
+    # Bounds how much text from a single tool result (e.g. execute_code stdout,
+    # OCR'd document text) gets inserted into the conversation per call — without
+    # this, a large-document read/edit can dump tens of thousands of characters
+    # into context on one turn.
     capabilities:
+      - 'subagents'
       - 'execute_code'
       - 'file_search'
       - 'artifacts'
       - 'skills'
       - 'tools'
-      - 'ocr'
       - 'context'
+      - 'ask_user_question'
+
+  anthropic:
+    apiKey: '${ANTHROPIC_API_KEY}'
+    models:
+        - 'claude-sonnet-4-5'
+        - 'claude-haiku-4-5'
+    titleConvo: true
+    titleModel: 'claude-haiku-4-5'
 
   custom:
-    - name: 'OpenRouter'
-      apiKey: '${OPENROUTER_KEY}'
-      baseURL: 'https://openrouter.ai/api/v1'
+    - name: BdREN AI
+      apiKey: '${BDREN_AI_API_KEY}'
+      baseURL: 'https://llm.shuvoo.com/v1'
       models:
         default:
-          - 'moonshotai/kimi-k2.6'
-          - 'google/gemini-3.1-flash-image'   # "Nano Banana 2"; returns images as well as text
-        fetch: false            # pin models; fetch:true lists hundreds and confuses novices
+          - 'glm-4.6v'
+        fetch: false
       titleConvo: true
-      titleModel: 'moonshotai/kimi-k2.6'
+      titleModel: 'glm-4.6v'
+      modelDisplayLabel: 'BdREN AI'
+
+    - name: OpenAI
+      apiKey: '${OPENAI_API_KEY}'
+      baseURL: 'https://api.openai.com/v1'
+      models:
+        default:
+          - 'gpt-5.6-luna'
+        fetch: false
+      modelDisplayLabel: OpenAI
+
+    - name: Claude
+      provider: anthropic
+      apiKey: '${ANTHROPIC_API_KEY}'
+      baseURL: 'https://api.anthropic.com'
+      models:
+        default:
+          - 'claude-sonnet-4-5'
+          - 'claude-haiku-4-5'
+        fetch: false
+      modelDisplayLabel: Claude
+
+    - name: OpenRouter
+      apiKey: '${OPENROUTER_KEY}'
+      baseURL: 'https://openrouter.ai/api/v1'
+      headers:
+        x-librechat-body-parentmessageid: '{{LIBRECHAT_BODY_PARENTMESSAGEID}}'
+      models:
+        default:
+          - 'google/gemma-4-31b-it'
+        fetch: false
+      titleConvo: true
       dropParams: ['stop']
       modelDisplayLabel: 'OpenRouter'
 
-    - name: 'NVIDIA'
+    # Separate endpoint so `addParams` below (modalities/image_config) only ever
+    # reaches google/gemini-3.1-flash-image. Sending `modalities: ["image","text"]`
+    # to Kimi on the shared OpenRouter endpoint 404s the whole request — OpenRouter
+    # rejects it outright rather than ignoring the unsupported modality.
+    - name: OpenRouter Image
+      apiKey: '${OPENROUTER_KEY}'
+      baseURL: 'https://openrouter.ai/api/v1'
+      headers:
+        x-librechat-body-parentmessageid: '{{LIBRECHAT_BODY_PARENTMESSAGEID}}'
+      models:
+        default:
+          - 'google/gemini-3.1-flash-image'
+        fetch: false
+      titleConvo: true
+      dropParams: ['stop']
+      modelDisplayLabel: 'OpenRouter Image'
+      # Gemini image models charge a flat ~1120 image tokens regardless of ratio
+      # (verified against the live API), so this is a framing choice, not a cost one.
+      # `modalities: ['image']` (no 'text') forces the model to always return an
+      # image rather than sometimes replying with a text-only answer for prompts
+      # it interprets as a question/discussion instead of a generation request
+      # (verified: 'Batman vs Superman' produced a 1000+ word essay with no image
+      # under ['image','text'], but a real image under ['image'] alone).
+      addParams:
+        modalities: ['image']
+        image_config:
+          resolution: '512'
+          aspect_ratio: '16:9'
+
+    - name: NVIDIA
       apiKey: '${NVIDIA_API_KEY}'
       baseURL: 'https://integrate.api.nvidia.com/v1'
       models:
-        default: ['z-ai/glm-5.2']
+        default:
+          - 'z-ai/glm-5.2'
         fetch: false
       titleConvo: true
-      titleModel: 'z-ai/glm-5.2'
-      addParams:
-        # camelCase is required — an unrecognised `max_tokens` is passed through as a
-        # raw model kwarg instead of setting the limit. Temperature and top_p are left
-        # out deliberately: the UI already defaults both to 1, and listing them here
-        # would pin the sliders rather than seed them.
-        maxTokens: 16384
       dropParams: ['stop']
       modelDisplayLabel: 'NVIDIA'

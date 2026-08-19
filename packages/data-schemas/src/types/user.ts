@@ -48,6 +48,7 @@ export interface IUser extends Document {
   }>;
   expiresAt?: Date;
   termsAccepted?: boolean;
+  termsAcceptedAt?: Date | null;
   personalization?: {
     memories?: boolean;
   };
@@ -59,6 +60,8 @@ export interface IUser extends Document {
   /** Field for external source identification (for consistency with TPrincipal schema) */
   idOnTheSource?: string;
   tenantId?: string;
+  /** Explicit SaaS account scope; legacy records derive this from tenantId. */
+  accountScope?: 'institution' | 'standalone';
   membershipStatus?: InstitutionMembershipStatus;
   suspendedAt?: Date | null;
   suspendedBy?: string | Types.ObjectId | null;
@@ -98,6 +101,7 @@ export interface UpdateUserRequest {
   plugins?: string[];
   twoFactorEnabled?: boolean;
   termsAccepted?: boolean;
+  termsAcceptedAt?: Date | null;
   personalization?: {
     memories?: boolean;
   };

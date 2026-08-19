@@ -23,13 +23,17 @@ function parseDateBoundary(value, label) {
 }
 
 async function resolveRange(tenantId, { start, end } = {}) {
-  const institution = await runAsSystem(() =>
-    models.Institution.findOne({ tenantId }).select('timezone').lean().exec(),
-  );
-  if (!institution) {
-    throw new HttpError(404, 'Institution not found');
+  let timezone = 'UTC';
+  if (tenantId) {
+    const institution = await runAsSystem(() =>
+      models.Institution.findOne({ tenantId }).select('timezone').lean().exec(),
+    );
+    if (!institution) {
+      throw new HttpError(404, 'Institution not found');
+    }
+    timezone = institution.timezone;
   }
-  const defaults = getCalendarMonthRange(institution.timezone);
+  const defaults = getCalendarMonthRange(timezone);
   const startDate = parseDateBoundary(start, 'start') ?? defaults.start;
   const endDate = parseDateBoundary(end, 'end') ?? defaults.end;
 
@@ -501,7 +505,7 @@ async function getMemberUsageSummary({ tenantId, userId, start, end }) {
   const objectId = mongoose.Types.ObjectId.isValid(userId)
     ? new mongoose.Types.ObjectId(userId)
     : userId;
-  const [summary, modelsUsed] = await tenantStorage.run({ tenantId }, async () =>
+  const aggregate = () =>
     Promise.all([
       Transaction.aggregate([
         { $match: { ...getBaseMatch(range), user: objectId } },
@@ -537,12 +541,17 @@ async function getMemberUsageSummary({ tenantId, userId, start, end }) {
             promptTokens: 1,
             completionTokens: 1,
             totalTokens: { $add: ['$promptTokens', '$completionTokens'] },
+            totalCost: 1,
+            eventCount: 1,
+            lastUsedAt: 1,
           },
         },
         { $sort: { totalTokens: -1 } },
       ]),
-    ]),
-  );
+    ]);
+  const [summary, modelsUsed] = tenantId
+    ? await tenantStorage.run({ tenantId }, aggregate)
+    : await runAsSystem(aggregate);
 
   return {
     range,

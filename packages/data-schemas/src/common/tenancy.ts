@@ -28,6 +28,14 @@ export const InstitutionInviteStatuses = {
 export type InstitutionInviteStatus =
   (typeof InstitutionInviteStatuses)[keyof typeof InstitutionInviteStatuses];
 
+export const InstitutionInviteAccountScopes = {
+  INSTITUTION: 'institution',
+  STANDALONE: 'standalone',
+} as const;
+
+export type InstitutionInviteAccountScope =
+  (typeof InstitutionInviteAccountScopes)[keyof typeof InstitutionInviteAccountScopes];
+
 export const InstitutionInviteSources = {
   MANUAL: 'manual',
   CSV_IMPORT: 'csv_import',

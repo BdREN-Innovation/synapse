@@ -1,6 +1,24 @@
-import React from 'react';
+import type { ComponentType } from 'react';
 
-const SocialButton = ({ id, enabled, serverDomain, oauthPath, Icon, label }) => {
+type SocialButtonProps = {
+  id: string;
+  enabled: boolean | undefined;
+  serverDomain: string;
+  oauthPath: string;
+  Icon: ComponentType;
+  label: string;
+  immersive?: boolean;
+};
+
+const SocialButton = ({
+  id,
+  enabled,
+  serverDomain,
+  oauthPath,
+  Icon,
+  label,
+  immersive = false,
+}: SocialButtonProps) => {
   if (!enabled) {
     return null;
   }
@@ -9,7 +27,11 @@ const SocialButton = ({ id, enabled, serverDomain, oauthPath, Icon, label }) => 
     <div className="mt-2 flex gap-x-2">
       <a
         aria-label={`${label}`}
-        className="flex w-full items-center space-x-3 rounded-2xl border border-border-light bg-surface-primary px-5 py-3 text-text-primary transition-colors duration-200 hover:bg-surface-tertiary"
+        className={`flex min-h-14 w-full items-center justify-center gap-3 rounded-theme-control border px-5 py-3 transition-colors duration-theme-normal ${
+          immersive
+            ? 'border-auth-border/50 bg-auth-surface-alt/70 text-auth-text hover:bg-auth-surface-alt'
+            : 'border-border-light bg-surface-primary text-text-primary hover:bg-surface-tertiary'
+        }`}
         href={`${serverDomain}/oauth/${oauthPath}`}
         data-testid={id}
       >

@@ -14,7 +14,11 @@ import type { ServerRequest } from '~/types/http';
 
 interface CapabilityDeps {
   getUserPrincipals: (
-    params: { userId: string | Types.ObjectId; role?: string | null },
+    params: {
+      userId: string | Types.ObjectId;
+      role?: string | null;
+      idOnTheSource?: string | null;
+    },
     session?: ClientSession,
   ) => Promise<ResolvedPrincipal[]>;
   hasCapabilityForPrincipals: (params: {
@@ -23,12 +27,23 @@ interface CapabilityDeps {
     tenantId?: string;
   }) => Promise<boolean>;
   isPlatformSuperadmin?: (user: CapabilityUser) => Promise<boolean>;
+  hasAnyConfigReadAccess?: (params: {
+    principals: ResolvedPrincipal[];
+    tenantId?: string;
+  }) => Promise<boolean>;
+  getHeldCapabilities?: (params: {
+    principals: ResolvedPrincipal[];
+    capabilities: SystemCapability[];
+    tenantId?: string;
+  }) => Promise<Set<SystemCapability>>;
 }
 
 export interface CapabilityUser {
   id: string;
   role: string;
   tenantId?: string;
+  /** External member id; pass `null` for local users to skip the fallback lookup. */
+  idOnTheSource?: string | null;
 }
 
 interface CapabilityStore {
@@ -118,14 +133,82 @@ export function getCachedPrincipals(user: CapabilityUser): ResolvedPrincipal[] |
  * database methods. Follows the same dependency-injection pattern as
  * `generateCheckAccess`.
  */
+export type GetReadableConfigSectionsFn = (
+  user: CapabilityUser,
+  sections: ConfigSection[],
+) => Promise<{ broad: boolean; sections: Set<string> }>;
+
 export function generateCapabilityCheck(deps: CapabilityDeps): {
   hasCapability: HasCapabilityFn;
   requireCapability: RequireCapabilityFn;
   hasConfigCapability: HasConfigCapabilityFn;
+  hasAnyConfigReadAccess: (user: CapabilityUser) => Promise<boolean>;
+  getReadableConfigSections: GetReadableConfigSectionsFn;
 } {
-  const { getUserPrincipals, hasCapabilityForPrincipals, isPlatformSuperadmin } = deps;
+  const {
+    getUserPrincipals,
+    hasCapabilityForPrincipals,
+    hasAnyConfigReadAccess: checkAny = async () => false,
+    getHeldCapabilities: getHeldCaps = async () => new Set(),
+    isPlatformSuperadmin,
+  } = deps;
 
   let workerWarned = false;
+
+  async function resolvePrincipals(user: CapabilityUser): Promise<ResolvedPrincipal[]> {
+    const store = capabilityStore.getStore();
+    const principalKey = `${user.id}:${user.role}:${user.tenantId ?? ''}`;
+    const cached = store?.principals.get(principalKey);
+    if (cached) {
+      return cached;
+    }
+    const principals = await getUserPrincipals({
+      userId: user.id,
+      role: user.role,
+      idOnTheSource: user.idOnTheSource,
+    });
+    store?.principals.set(principalKey, principals);
+    return principals;
+  }
+
+  /** Whether the user holds any config-read capability at all, broad or section-scoped. */
+  async function hasAnyConfigReadAccess(user: CapabilityUser): Promise<boolean> {
+    if (isPlatformSuperadmin && (await isPlatformSuperadmin(user))) {
+      return true;
+    }
+    const principals = await resolvePrincipals(user);
+    return checkAny({ principals, tenantId: user.tenantId });
+  }
+
+  /**
+   * Resolves which of `sections` the user can read in a single batched
+   * query, instead of one `hasConfigCapability` round trip per section.
+   */
+  async function getReadableConfigSections(
+    user: CapabilityUser,
+    sections: ConfigSection[],
+  ): Promise<{ broad: boolean; sections: Set<string> }> {
+    if (isPlatformSuperadmin && (await isPlatformSuperadmin(user))) {
+      return { broad: true, sections: new Set(sections) };
+    }
+    const principals = await resolvePrincipals(user);
+    const capsToCheck = [
+      SystemCapabilities.READ_CONFIGS,
+      SystemCapabilities.MANAGE_CONFIGS,
+      ...sections.map(readConfigCapability),
+    ];
+    const held = await getHeldCaps({
+      principals,
+      capabilities: capsToCheck,
+      tenantId: user.tenantId,
+    });
+    const broad =
+      held.has(SystemCapabilities.READ_CONFIGS) || held.has(SystemCapabilities.MANAGE_CONFIGS);
+    const readableSections = new Set(
+      broad ? sections : sections.filter((s) => held.has(readConfigCapability(s))),
+    );
+    return { broad, sections: readableSections };
+  }
 
   async function hasCapability(
     user: CapabilityUser,
@@ -153,16 +236,7 @@ export function generateCapabilityCheck(deps: CapabilityDeps): {
       return true;
     }
 
-    const principalKey = `${user.id}:${user.role}:${user.tenantId ?? ''}`;
-    let principals: ResolvedPrincipal[];
-    const cachedPrincipals = store?.principals.get(principalKey);
-    if (cachedPrincipals) {
-      principals = cachedPrincipals;
-    } else {
-      principals = await getUserPrincipals({ userId: user.id, role: user.role });
-      store?.principals.set(principalKey, principals);
-    }
-
+    const principals = await resolvePrincipals(user);
     const result = await hasCapabilityForPrincipals({
       principals,
       capability,
@@ -213,6 +287,7 @@ export function generateCapabilityCheck(deps: CapabilityDeps): {
           id,
           role: req.user.role ?? '',
           tenantId: (req.user as CapabilityUser).tenantId,
+          idOnTheSource: req.user.idOnTheSource ?? null,
         };
 
         if (await hasCapability(user, capability)) {
@@ -232,5 +307,11 @@ export function generateCapabilityCheck(deps: CapabilityDeps): {
     };
   }
 
-  return { hasCapability, requireCapability, hasConfigCapability };
+  return {
+    hasCapability,
+    requireCapability,
+    hasConfigCapability,
+    hasAnyConfigReadAccess,
+    getReadableConfigSections,
+  };
 }

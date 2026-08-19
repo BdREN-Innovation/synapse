@@ -1,15 +1,19 @@
 import type { Document, Types } from 'mongoose';
 import type {
+  InstitutionInviteAccountScope,
   InstitutionInviteSource,
   InstitutionInviteStatus,
 } from '~/common';
 
 export interface IInstitutionInvite extends Document {
   _id: Types.ObjectId;
-  tenantId: string;
+  tenantId?: string | null;
+  accountScope?: InstitutionInviteAccountScope;
   email: string;
   name?: string;
+  requestedUsername?: string | null;
   requestedRole: string;
+  creditPackageId?: string | null;
   status: InstitutionInviteStatus;
   tokenHash: string;
   expiresAt: Date;

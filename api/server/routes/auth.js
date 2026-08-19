@@ -50,6 +50,7 @@ router.post(
   middleware.logHeaders,
   middleware.loginLimiter,
   middleware.checkBan,
+  middleware.validateEmailLogin,
   ldapAuth ? middleware.requireLdapAuth : middleware.requireLocalAuth,
   setBalanceConfig,
   loginController,
@@ -74,7 +75,7 @@ router.get('/invite/:token', middleware.registerLimiter, async (req, res) => {
     if (!invite || invite.status !== InstitutionInviteStatuses.PENDING) {
       return res.status(404).json({ message: 'Invitation not found, already used, or expired' });
     }
-    return res.status(200).json({ email: invite.email, name: invite.name });
+    return res.status(200).json({ email: invite.email, name: invite.name, username: invite.requestedUsername });
   } catch (error) {
     logger.error('[GET /auth/invite/:token] Failed to resolve invitation', error);
     return res.status(500).json({ message: 'Failed to resolve invitation' });
@@ -98,6 +99,7 @@ router.post(
 );
 router.post(
   '/resetPassword',
+  middleware.resetPasswordSubmissionLimiter,
   middleware.checkBan,
   middleware.validatePasswordReset,
   resetPasswordController,

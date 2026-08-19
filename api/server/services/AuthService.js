@@ -3,6 +3,7 @@ const jwt = require('jsonwebtoken');
 const { webcrypto } = require('node:crypto');
 const {
   logger,
+  runAsSystem,
   getTenantId,
   DEFAULT_SESSION_EXPIRY,
   DEFAULT_REFRESH_TOKEN_EXPIRY,
@@ -36,6 +37,7 @@ const {
   deleteUserById,
   generateRefreshToken,
 } = require('~/models');
+const models = require('~/db/models');
 const { registerSchema } = require('~/strategies/validators');
 const { getAppConfig } = require('~/server/services/Config');
 const {
@@ -224,16 +226,17 @@ const createTokenHash = () => {
  */
 const sendVerificationEmail = async (user) => {
   const [verifyToken, hash] = createTokenHash();
+  const email = user.email.toLowerCase();
 
   const verificationLink = `${
     domains.client
-  }/verify?token=${verifyToken}&email=${encodeURIComponent(user.email)}`;
+  }/verify?token=${verifyToken}&email=${encodeURIComponent(email)}`;
   await sendEmail({
-    email: user.email,
+    email,
     subject: 'Verify your email',
     payload: {
       appName: process.env.APP_TITLE || 'LibreChat',
-      name: user.name || user.username || user.email,
+      name: user.name || user.username || email,
       verificationLink: verificationLink,
       year: new Date().getFullYear(),
     },
@@ -242,14 +245,14 @@ const sendVerificationEmail = async (user) => {
 
   await createToken({
     userId: user._id,
-    email: user.email,
+    email,
     type: AuthTokenTypes.EMAIL_VERIFICATION,
     token: hash,
     createdAt: Date.now(),
     expiresIn: 900,
   });
 
-  logger.info(`[sendVerificationEmail] Verification link issued. [Email: ${user.email}]`);
+  logger.info(`[sendVerificationEmail] Verification link issued. [Email: ${email}]`);
 };
 
 const resendUserVerificationEmail = async (user) => {
@@ -356,7 +359,10 @@ const registerUser = async (user, additionalData = {}) => {
 
   let newUserId;
   try {
-    const tenantId = invite?.tenantId || trustedAdditionalData?.tenantId || getTenantId();
+    const standaloneInvite = invite?.accountScope === 'standalone';
+    const tenantId = standaloneInvite
+      ? undefined
+      : invite?.tenantId || trustedAdditionalData?.tenantId || getTenantId();
     const appConfig = await getAppConfig(tenantId ? { tenantId } : {});
     if (!isEmailDomainAllowed(email, appConfig?.registration?.allowedDomains)) {
       const errorMessage =
@@ -365,7 +371,15 @@ const registerUser = async (user, additionalData = {}) => {
       return { status: 403, message: errorMessage };
     }
 
-    const existingUser = await findUser({ email }, 'email _id tenantId membershipStatus');
+    const existingUser = await findUser({ email }, 'email _id tenantId membershipStatus username');
+    if (invite && username) {
+      const usernameOwner = await runAsSystem(() =>
+        models.User.findOne({ username: username.toLowerCase() }).select('_id').lean().exec(),
+      );
+      if (usernameOwner && usernameOwner._id.toString() !== existingUser?._id?.toString()) {
+        return { status: 409, message: 'This username is already in use' };
+      }
+    }
 
     if (existingUser) {
       const inviteMayClaimAccount = invite != null && !(await isPlatformAdminEmail(email));
@@ -376,9 +390,24 @@ const registerUser = async (user, additionalData = {}) => {
         });
       }
 
+      if (inviteMayClaimAccount && invite?.accountScope === 'standalone' && !existingUser.tenantId) {
+        await updateUser(existingUser._id, {
+          provider: provider ?? 'local',
+          username,
+          name,
+          avatar: null,
+          role: SystemRoles.USER,
+          accountScope: 'standalone',
+          membershipStatus: InstitutionMembershipStatuses.ACTIVE,
+        });
+        await completeInviteAcceptance({ inviteId: invite._id, userId: existingUser._id.toString() });
+        return { status: 200, message: genericVerificationMessage };
+      }
+
       if (inviteMayClaimAccount && !existingUser.tenantId) {
         await updateUser(existingUser._id, {
           tenantId: invite.tenantId,
+          accountScope: 'institution',
           provider: provider ?? 'local',
           username,
           name,
@@ -407,6 +436,7 @@ const registerUser = async (user, additionalData = {}) => {
         const salt = bcrypt.genSaltSync(10);
         await updateUser(existingUser._id, {
           provider: provider ?? 'local',
+          accountScope: 'institution',
           username,
           name,
           avatar: null,
@@ -450,9 +480,10 @@ const registerUser = async (user, additionalData = {}) => {
       ...(tenantId
         ? {
             tenantId,
+            accountScope: 'institution',
             membershipStatus: InstitutionMembershipStatuses.SUSPENDED,
           }
-        : null),
+        : { accountScope: 'standalone' }),
       ...trustedAdditionalData,
     };
 

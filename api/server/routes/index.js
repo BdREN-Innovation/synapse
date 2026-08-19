@@ -3,15 +3,18 @@ const assistants = require('./assistants');
 const categories = require('./categories');
 const adminAuth = require('./admin/auth');
 const adminConfig = require('./admin/config');
+const adminLangfuse = require('./admin/langfuse');
 const adminGrants = require('./admin/grants');
 const adminGroups = require('./admin/groups');
 const adminRoles = require('./admin/roles');
 const adminSkills = require('./admin/skills');
 const adminUsage = require('./admin/usage');
 const adminUsers = require('./admin/users');
+const adminBilling = require('./admin/billing');
 const adminAuditLog = require('./admin/audit');
 const platformInstitutions = require('./platform/institutions');
 const platformUsers = require('./platform/users');
+const platformInstitutionPackages = require('./platform/institutionPackages');
 const endpoints = require('./endpoints');
 const staticRoute = require('./static');
 const messages = require('./messages');
@@ -46,15 +49,18 @@ module.exports = {
   auth,
   adminAuth,
   adminConfig,
+  adminLangfuse,
   adminGrants,
   adminGroups,
   adminRoles,
   adminSkills,
   adminUsage,
   adminUsers,
+  adminBilling,
   adminAuditLog,
   platformInstitutions,
   platformUsers,
+  platformInstitutionPackages,
   keys,
   apiKeys,
   user,

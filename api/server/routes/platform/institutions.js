@@ -1,5 +1,11 @@
 const express = require('express');
 const { logger, runAsSystem, INSTITUTION_ADMIN_ROLE } = require('@librechat/data-schemas');
+const {
+  AccessRoleIds,
+  PermissionBits,
+  PrincipalType,
+  ResourceType,
+} = require('librechat-data-provider');
 const { requireJwtAuth } = require('~/server/middleware');
 const requirePlatformSuperadmin = require('~/server/middleware/platformAdmin');
 const {
@@ -14,6 +20,7 @@ const {
   HttpError,
 } = require('~/server/services/institutionMembers');
 const db = require('~/models');
+const models = require('~/db/models');
 const {
   PolicyError,
   createUsagePolicy,
@@ -76,9 +83,13 @@ function actorFromRequest(req) {
  * security-sensitive, so the write is fail-closed by default: a failed audit
  * surfaces as a request error rather than a silently missing record.
  */
-async function recordPlatformAudit(req, { action, target, metadata, outcome, severity }) {
+async function recordPlatformAudit(
+  req,
+  { action, target, metadata, outcome, severity, category = 'institution' },
+) {
   await db.recordAuditEntry(
     {
+      category,
       action,
       actor: actorFromRequest(req),
       target,
@@ -195,6 +206,8 @@ router.get('/', async (req, res) => {
     const filter = {};
     if (typeof req.query.status === 'string' && req.query.status) {
       filter.status = req.query.status;
+    } else {
+      filter.status = { $ne: 'closed' };
     }
     if (typeof req.query.q === 'string' && req.query.q.trim()) {
       const escaped = req.query.q.trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -210,6 +223,35 @@ router.get('/', async (req, res) => {
   }
 });
 
+router.delete('/:tenantId', async (req, res) => {
+  const { tenantId } = req.params;
+  try {
+    const institution = await runAsSystem(() =>
+      models.Institution.findOneAndUpdate(
+        { tenantId: tenantId.trim(), status: { $ne: 'closed' } },
+        { $set: { status: 'closed' } },
+        { new: true },
+      )
+        .lean()
+        .exec(),
+    );
+    if (!institution) {
+      return res.status(404).json({ error: 'Institution not found or already removed' });
+    }
+
+    await recordPlatformAudit(req, {
+      action: 'institution.updated',
+      severity: 'warning',
+      target: { type: 'institution', id: tenantId, name: institution.name },
+      metadata: { operation: 'closed', status: 'closed' },
+    });
+    return res.status(200).json({ institution });
+  } catch (error) {
+    logger.error('[platform/institutions] close failed', error);
+    return res.status(500).json({ error: 'Failed to remove institution' });
+  }
+});
+
 router.post('/', async (req, res) => {
   try {
     const {
@@ -222,6 +264,8 @@ router.post('/', async (req, res) => {
       adminEmail,
       adminName,
       limits,
+      packageId,
+      monthlyTokenLimit,
     } = req.body ?? {};
     if (!tenantId || !name) {
       return res.status(400).json({ error: 'tenantId and name are required' });
@@ -252,7 +296,7 @@ router.post('/', async (req, res) => {
       if (existing) {
         return null;
       }
-      return await db.createInstitution({
+      const created = await db.createInstitution({
         tenantId,
         name,
         slug,
@@ -262,6 +306,14 @@ router.post('/', async (req, res) => {
         stats: { activeMembers: 0 },
         createdBy: req.user.id ?? req.user._id,
       });
+      if (packageId) {
+        const pkg = await models.InstitutionPackage.findOne({ id: packageId, active: true }).lean().exec();
+        if (!pkg) throw new HttpError(400, 'Active institution package not found');
+        const effectiveLimit = Number.isInteger(monthlyTokenLimit) && monthlyTokenLimit > 0 ? monthlyTokenLimit : pkg.monthlyTokenLimit;
+        created.packageAssignment = { packageId: pkg.id, packageSnapshot: { name: pkg.name, description: pkg.description, price: pkg.price, currency: pkg.currency, monthlyTokenLimit: pkg.monthlyTokenLimit }, monthlyTokenLimit: effectiveLimit, assignedAt: new Date(), assignedBy: req.user.id ?? req.user._id };
+        await created.save();
+      }
+      return created;
     });
 
     if (!institution) {
@@ -271,7 +323,10 @@ router.post('/', async (req, res) => {
     await recordPlatformAudit(req, {
       action: 'institution.created',
       target: { type: 'institution', id: tenantId, name },
-      metadata: { slug: institution.slug ?? null, limits: institution.limits ?? null },
+      metadata: {
+        slug: institution.slug ?? null,
+        maxActiveMembers: institution.limits?.maxActiveMembers ?? null,
+      },
     });
 
     /**
@@ -297,12 +352,22 @@ router.post('/', async (req, res) => {
           { tenantId, cleanupError },
         );
       });
-      await recordPlatformAudit(req, {
-        action: 'institution.create_rolled_back',
-        target: { type: 'institution', id: tenantId, name },
-        metadata: { reason: error?.message ?? 'admin appointment failed' },
-        outcome: 'failure',
-      });
+      try {
+        // Keep rollback auditing valid against older audit-log enum versions.
+        // The operation is carried in metadata while the action remains a
+        // registered institution action.
+        await recordPlatformAudit(req, {
+          action: 'institution.created',
+          target: { type: 'institution', id: tenantId, name },
+          metadata: {
+            operation: 'create_rolled_back',
+            reason: error?.message ?? 'admin appointment failed',
+          },
+          outcome: 'failure',
+        });
+      } catch (auditError) {
+        logger.error('[platform/institutions] failed to record create rollback audit', auditError);
+      }
       throw error;
     }
 
@@ -342,6 +407,207 @@ router.get('/:tenantId', async (req, res) => {
     return res.status(200).json({ institution });
   } catch (error) {
     return res.status(500).json({ error: 'Failed to get institution' });
+  }
+});
+
+/**
+ * Lists the user-facing agents and the institution groups that can receive
+ * access. The sync script uses group ACLs; keeping the same shape here lets
+ * platform administrators manage that ACL without changing the YAML agent
+ * registration.
+ */
+router.get('/:tenantId/agent-access', async (req, res) => {
+  const { tenantId } = req.params;
+  const groupId = typeof req.query.groupId === 'string' ? req.query.groupId.trim() : '';
+
+  try {
+    const result = await runAsSystem(async () => {
+      const institutionUsers = await models.User.find({ tenantId })
+        .select('_id idOnTheSource')
+        .lean()
+        .exec();
+      const memberKeys = institutionUsers.flatMap((user) =>
+        [user._id?.toString(), user.idOnTheSource].filter(Boolean),
+      );
+      const groupFilter = memberKeys.length
+        ? { $or: [{ tenantId }, { memberIds: { $in: memberKeys } }] }
+        : { tenantId };
+
+      const [agents, groups] = await Promise.all([
+        models.Agent.find({
+          orchestrationOnly: { $ne: true },
+          $or: [{ tenantId }, { tenantId: { $exists: false } }, { tenantId: null }],
+        })
+          .select('_id id name description tenantId edges')
+          .sort({ name: 1 })
+          .lean()
+          .exec(),
+        models.Group.find(groupFilter)
+          .select('_id name description source memberIds tenantId')
+          .sort({ name: 1 })
+          .lean()
+          .exec(),
+      ]);
+
+      const selectedGroup = groupId ? groups.find((group) => group._id.toString() === groupId) : null;
+      if (groupId && !selectedGroup) {
+        throw new HttpError(404, 'Institution group not found');
+      }
+
+      const accessByAgent = selectedGroup
+        ? await models.AclEntry.find({
+            principalType: PrincipalType.GROUP,
+            principalId: selectedGroup._id,
+            resourceType: ResourceType.AGENT,
+            resourceId: { $in: agents.map((agent) => agent._id) },
+          })
+            .select('resourceId permBits')
+            .lean()
+            .exec()
+        : [];
+      const access = new Map(
+        accessByAgent.map((entry) => [entry.resourceId.toString(), (entry.permBits & PermissionBits.VIEW) !== 0]),
+      );
+
+      return {
+        agents: agents.map((agent) => ({
+          id: agent.id,
+          name: agent.name,
+          description: agent.description,
+          tenantId: agent.tenantId ?? null,
+          enabled: selectedGroup ? access.get(agent._id.toString()) === true : false,
+        })),
+        groups: groups.map((group) => ({
+          id: group._id.toString(),
+          name: group.name,
+          description: group.description ?? '',
+          source: group.source,
+          memberCount: group.memberIds?.length ?? 0,
+        })),
+        selectedGroupId: selectedGroup?._id.toString() ?? null,
+      };
+    });
+
+    return res.status(200).json(result);
+  } catch (error) {
+    if (error instanceof HttpError) return res.status(error.statusCode).json({ error: error.message });
+    logger.error('[platform/institutions] agent access read failed', error);
+    return res.status(500).json({ error: 'Failed to load agent access' });
+  }
+});
+
+router.patch('/:tenantId/agent-access', async (req, res) => {
+  const { tenantId } = req.params;
+  const { agentId, groupId, enabled } = req.body ?? {};
+  if (typeof agentId !== 'string' || !agentId.trim() || typeof groupId !== 'string' || !groupId.trim()) {
+    return res.status(400).json({ error: 'agentId and groupId are required' });
+  }
+  if (typeof enabled !== 'boolean') {
+    return res.status(400).json({ error: 'enabled must be a boolean' });
+  }
+
+  try {
+    const result = await runAsSystem(async () => {
+      const institutionUsers = await models.User.find({ tenantId })
+        .select('_id idOnTheSource')
+        .lean()
+        .exec();
+      const memberKeys = institutionUsers.flatMap((user) =>
+        [user._id?.toString(), user.idOnTheSource].filter(Boolean),
+      );
+      const groupFilter = memberKeys.length
+        ? { $or: [{ tenantId }, { memberIds: { $in: memberKeys } }] }
+        : { tenantId };
+      const [agent, group] = await Promise.all([
+        models.Agent.findOne({
+          id: agentId.trim(),
+          orchestrationOnly: { $ne: true },
+          $or: [{ tenantId }, { tenantId: { $exists: false } }, { tenantId: null }],
+        })
+          .select('_id id name edges')
+          .lean()
+          .exec(),
+        models.Group.findOne({ _id: groupId.trim(), ...groupFilter })
+          .select('_id name tenantId')
+          .lean()
+          .exec(),
+      ]);
+      if (!agent) throw new HttpError(404, 'Agent not found or not available to this institution');
+      if (!group) throw new HttpError(404, 'Institution group not found');
+
+      const targetAgents = [agent];
+      const specialistIds = (agent.edges ?? [])
+        .map((edge) => edge.to)
+        .filter((id) => typeof id === 'string' && id.length > 0);
+      if (specialistIds.length) {
+        const specialists = await models.Agent.find({ id: { $in: specialistIds } })
+          .select('_id id')
+          .lean()
+          .exec();
+        targetAgents.push(...specialists);
+      }
+
+      if (enabled) {
+        const { grantPermission } = require('~/server/services/PermissionService');
+        await grantPermission({
+          principalType: PrincipalType.GROUP,
+          principalId: group._id,
+          resourceType: ResourceType.AGENT,
+          resourceId: agent._id,
+          accessRoleId: AccessRoleIds.AGENT_VIEWER,
+          grantedBy: req.user.id ?? req.user._id,
+        });
+        for (const specialist of targetAgents.slice(1)) {
+          await grantPermission({
+            principalType: PrincipalType.GROUP,
+            principalId: group._id,
+            resourceType: ResourceType.REMOTE_AGENT,
+            resourceId: specialist._id,
+            accessRoleId: AccessRoleIds.REMOTE_AGENT_VIEWER,
+            grantedBy: req.user.id ?? req.user._id,
+          });
+        }
+      } else {
+        await models.AclEntry.deleteMany({
+          principalType: PrincipalType.GROUP,
+          principalId: group._id,
+          $or: [
+            { resourceType: ResourceType.AGENT, resourceId: { $in: targetAgents.map((item) => item._id) } },
+            { resourceType: ResourceType.REMOTE_AGENT, resourceId: { $in: targetAgents.slice(1).map((item) => item._id) } },
+          ],
+        }).exec();
+      }
+
+      return { enabled, agentId: agent.id, groupId: group._id.toString() };
+    });
+
+    await recordPlatformAudit(req, {
+      action: 'institution.updated',
+      severity: 'warning',
+      target: { type: 'institution', id: tenantId },
+      metadata: { operation: enabled ? 'agent_access_granted' : 'agent_access_revoked', agentId, groupId },
+    });
+    return res.status(200).json(result);
+  } catch (error) {
+    if (error instanceof HttpError) return res.status(error.statusCode).json({ error: error.message });
+    logger.error('[platform/institutions] agent access mutation failed', error);
+    return res.status(500).json({ error: 'Failed to update agent access' });
+  }
+});
+
+router.post('/:tenantId/package', async (req, res) => {
+  try {
+    const institution = await runAsSystem(() => db.getInstitutionByTenantId(req.params.tenantId));
+    if (!institution) return res.status(404).json({ error: 'Institution not found' });
+    const pkg = await runAsSystem(() => models.InstitutionPackage.findOne({ id: req.body?.packageId, active: true }).lean().exec());
+    if (!pkg) return res.status(400).json({ error: 'Active institution package not found' });
+    const monthlyTokenLimit = Number.isInteger(req.body?.monthlyTokenLimit) && req.body.monthlyTokenLimit > 0 ? req.body.monthlyTokenLimit : pkg.monthlyTokenLimit;
+    const updated = await runAsSystem(() => models.Institution.findOneAndUpdate({ tenantId: req.params.tenantId }, { $set: { packageAssignment: { packageId: pkg.id, packageSnapshot: { name: pkg.name, description: pkg.description, price: pkg.price, currency: pkg.currency, monthlyTokenLimit: pkg.monthlyTokenLimit }, monthlyTokenLimit, assignedAt: new Date(), assignedBy: req.user.id ?? req.user._id } } }, { new: true }).lean().exec());
+    await recordPlatformAudit(req, { action: 'institution.updated', target: { type: 'institution', id: req.params.tenantId }, metadata: { packageId: pkg.id, monthlyTokenLimit } });
+    return res.json({ institution: updated });
+  } catch (error) {
+    logger.error('[platform/institutions] package assignment failed', error);
+    return res.status(500).json({ error: 'Failed to assign institution package' });
   }
 });
 
@@ -542,13 +808,11 @@ router.patch('/:tenantId', async (req, res) => {
       action: 'institution.updated',
       target: { type: 'institution', id: tenantId, name: institution.name },
       metadata: {
-        fields: Object.keys(updates),
-        before: { name: before.name, slug: before.slug ?? null, limits: before.limits ?? null },
-        after: {
-          name: institution.name,
-          slug: institution.slug ?? null,
-          limits: institution.limits ?? null,
-        },
+        fields: Object.keys(updates).join(','),
+        beforeSlug: before.slug ?? null,
+        beforeMaxActiveMembers: before.limits?.maxActiveMembers ?? null,
+        afterSlug: institution.slug ?? null,
+        afterMaxActiveMembers: institution.limits?.maxActiveMembers ?? null,
       },
     });
 

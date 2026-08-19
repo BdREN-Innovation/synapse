@@ -1,8 +1,11 @@
-const { SystemRoles } = require('librechat-data-provider');
+const { SystemRoles, CanonicalRoles } = require('librechat-data-provider');
 
 function checkAdmin(req, res, next) {
   try {
-    if (req.user.role !== SystemRoles.ADMIN) {
+    if (
+      req.user.role !== SystemRoles.ADMIN &&
+      req.user.role !== CanonicalRoles?.PLATFORM_SUPERADMIN
+    ) {
       return res.status(403).json({ message: 'Forbidden' });
     }
     next();

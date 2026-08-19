@@ -39,6 +39,22 @@ const institutionSchema: Schema<IInstitution> = new Schema<IInstitution>(
       default: 0,
       min: 0,
     },
+    packageAssignment: {
+      type: {
+        packageId: { type: String, trim: true },
+        packageSnapshot: {
+          name: { type: String, required: true },
+          description: { type: String, default: '' },
+          price: { type: Number, min: 0 },
+          currency: { type: String, uppercase: true },
+          monthlyTokenLimit: { type: Number, min: 1 },
+        },
+        monthlyTokenLimit: { type: Number, min: 1 },
+        assignedAt: { type: Date },
+        assignedBy: { type: Schema.Types.ObjectId, ref: 'User' },
+      },
+      default: null,
+    },
     limits: {
       type: {
         maxActiveMembers: {

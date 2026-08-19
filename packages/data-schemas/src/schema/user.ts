@@ -128,6 +128,10 @@ const userSchema: Schema<IUser> = new Schema<IUser>(
       type: Boolean,
       default: false,
     },
+    termsAcceptedAt: {
+      type: Date,
+      default: null,
+    },
     personalization: {
       type: {
         memories: {
@@ -161,6 +165,11 @@ const userSchema: Schema<IUser> = new Schema<IUser>(
     },
     tenantId: {
       type: String,
+      index: true,
+    },
+    accountScope: {
+      type: String,
+      enum: ['institution', 'standalone'],
       index: true,
     },
     membershipStatus: {

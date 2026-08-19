@@ -10,6 +10,7 @@ import { createSystemGrantModel } from './systemGrant';
 import { createPluginAuthModel } from './pluginAuth';
 import { createSharedLinkModel } from './sharedLink';
 import { createAccessRoleModel } from './accessRole';
+import { createToolFavoriteModel } from './favorite';
 import { createMCPServerModel } from './mcpServer';
 import { createAssistantModel } from './assistant';
 import { createSkillFileModel } from './skillFile';
@@ -19,6 +20,7 @@ import { createAclEntryModel } from './aclEntry';
 import { createAuditLogModel } from './auditLog';
 import { createSessionModel } from './session';
 import { createBalanceModel } from './balance';
+import { createCreditGrantModel } from './creditGrant';
 import { createMessageModel } from './message';
 import { createActionModel } from './action';
 import { createBannerModel } from './banner';
@@ -30,6 +32,7 @@ import { createInstitutionImportJobModel } from './institutionImportJob';
 import { createTokenModel } from './token';
 import { createAgentModel } from './agent';
 import { createInstitutionInviteModel } from './institutionInvite';
+import { createInstitutionPackageModel } from './institutionPackage';
 import { createSkillModel } from './skill';
 import { createGroupModel } from './group';
 import { createInstitutionModel } from './institution';
@@ -43,6 +46,7 @@ import { createUsageBucketModel } from './usageBucket';
 import { createUsageReservationModel } from './usageReservation';
 import { createUsageWarningModel } from './usageWarning';
 import { createAdminScopeAssignmentModel } from './adminScopeAssignment';
+import logger from '~/config/winston';
 
 /**
  * Creates all database models for all collections
@@ -52,6 +56,7 @@ export function createModels(mongoose: typeof import('mongoose')): {
   Token: ReturnType<typeof createTokenModel>;
   Session: ReturnType<typeof createSessionModel>;
   Balance: ReturnType<typeof createBalanceModel>;
+  CreditGrant: ReturnType<typeof createCreditGrantModel>;
   Conversation: ReturnType<typeof createConversationModel>;
   ChatProject: ReturnType<typeof createChatProjectModel>;
   Message: ReturnType<typeof createMessageModel>;
@@ -78,6 +83,7 @@ export function createModels(mongoose: typeof import('mongoose')): {
   SharedLink: ReturnType<typeof createSharedLinkModel>;
   ToolCall: ReturnType<typeof createToolCallModel>;
   MemoryEntry: ReturnType<typeof createMemoryModel>;
+  ToolFavorite: ReturnType<typeof createToolFavoriteModel>;
   AccessRole: ReturnType<typeof createAccessRoleModel>;
   AclEntry: ReturnType<typeof createAclEntryModel>;
   SystemGrant: ReturnType<typeof createSystemGrantModel>;
@@ -87,6 +93,7 @@ export function createModels(mongoose: typeof import('mongoose')): {
   Institution: ReturnType<typeof createInstitutionModel>;
   InstitutionImportJob: ReturnType<typeof createInstitutionImportJobModel>;
   InstitutionInvite: ReturnType<typeof createInstitutionInviteModel>;
+  InstitutionPackage: ReturnType<typeof createInstitutionPackageModel>;
   PlatformAdmin: ReturnType<typeof createPlatformAdminModel>;
   UsagePolicy: ReturnType<typeof createUsagePolicyModel>;
   UsageBucket: ReturnType<typeof createUsageBucketModel>;
@@ -94,11 +101,12 @@ export function createModels(mongoose: typeof import('mongoose')): {
   UsageWarning: ReturnType<typeof createUsageWarningModel>;
   AdminScopeAssignment: ReturnType<typeof createAdminScopeAssignmentModel>;
 } {
-  return {
+  const models = {
     User: createUserModel(mongoose),
     Token: createTokenModel(mongoose),
     Session: createSessionModel(mongoose),
     Balance: createBalanceModel(mongoose),
+    CreditGrant: createCreditGrantModel(mongoose),
     Conversation: createConversationModel(mongoose),
     ChatProject: createChatProjectModel(mongoose),
     Message: createMessageModel(mongoose),
@@ -125,6 +133,7 @@ export function createModels(mongoose: typeof import('mongoose')): {
     SharedLink: createSharedLinkModel(mongoose),
     ToolCall: createToolCallModel(mongoose),
     MemoryEntry: createMemoryModel(mongoose),
+    ToolFavorite: createToolFavoriteModel(mongoose),
     AccessRole: createAccessRoleModel(mongoose),
     AclEntry: createAclEntryModel(mongoose),
     SystemGrant: createSystemGrantModel(mongoose),
@@ -134,6 +143,7 @@ export function createModels(mongoose: typeof import('mongoose')): {
     Institution: createInstitutionModel(mongoose),
     InstitutionImportJob: createInstitutionImportJobModel(mongoose),
     InstitutionInvite: createInstitutionInviteModel(mongoose),
+    InstitutionPackage: createInstitutionPackageModel(mongoose),
     PlatformAdmin: createPlatformAdminModel(mongoose),
     UsagePolicy: createUsagePolicyModel(mongoose),
     UsageBucket: createUsageBucketModel(mongoose),
@@ -141,4 +151,19 @@ export function createModels(mongoose: typeof import('mongoose')): {
     UsageWarning: createUsageWarningModel(mongoose),
     AdminScopeAssignment: createAdminScopeAssignmentModel(mongoose),
   };
+  /**
+   * Background index builds fail silently unless an 'index' listener is
+   * attached (e.g. Amazon DocumentDB <5.0 rejecting partialFilterExpression),
+   * leaving unique constraints unenforced with no trace in the logs.
+   */
+  for (const model of Object.values(models)) {
+    if (model.listenerCount('index') === 0) {
+      model.on('index', (error?: Error) => {
+        if (error) {
+          logger.error(`Index build failed for "${model.modelName}": ${error.message}`);
+        }
+      });
+    }
+  }
+  return models;
 }

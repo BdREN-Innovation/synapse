@@ -29,6 +29,7 @@ function ModelSelectorContent() {
     modelSpecs,
     mappedEndpoints,
     endpointsConfig,
+    startupConfig,
     // State
     searchValue,
     searchResults,
@@ -41,6 +42,12 @@ function ModelSelectorContent() {
     onOpenChange,
     keyDialogEndpoint,
   } = useModelSelectorContext();
+
+  /** When modelSpecs.enforce is on, the curated spec list is the only thing users
+   *  should see — the raw provider/model tree underneath is redundant and, for
+   *  most specs, duplicates a model already listed. */
+  const specsEnforced = startupConfig?.modelSpecs?.enforce === true;
+  const visibleEndpoints = specsEnforced ? [] : (mappedEndpoints ?? []);
 
   const selectedIcon = useMemo(
     () =>
@@ -112,9 +119,9 @@ function ModelSelectorContent() {
               selectedValues.modelSpec || '',
             )}
             {/* Render endpoints (will include grouped specs matching endpoint names) */}
-            {renderEndpoints(mappedEndpoints ?? [])}
+            {renderEndpoints(visibleEndpoints)}
             {/* Render custom groups (specs with group field not matching any endpoint) */}
-            {renderCustomGroups(modelSpecs || [], mappedEndpoints ?? [])}
+            {renderCustomGroups(modelSpecs || [], visibleEndpoints)}
           </>
         )}
       </Menu>
