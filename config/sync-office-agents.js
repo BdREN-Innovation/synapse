@@ -10,6 +10,7 @@ const {
   PrincipalType,
   ResourceType,
   AccessRoleIds,
+  PermissionBits,
   SystemRoles,
 } = require('librechat-data-provider');
 const { runAsSystem, createModels } = require('@librechat/data-schemas');
@@ -31,7 +32,7 @@ const { grantPermission } = require('~/server/services/PermissionService');
  * to allow internal staff to use the master and load specialists as subagents.
  *
  * Usage:
- *   node config/sync-office-agents.js [--manifest=path] [--tenant=id] [--author=email] [--group=id] [--apply]
+ *   node config/sync-office-agents.js [--manifest=path] [--tenant=id] [--author=email] [--group=id] [--public] [--reset] [--apply]
  *
  * Examples:
  *   # Dry run with default manifest
@@ -39,6 +40,9 @@ const { grantPermission } = require('~/server/services/PermissionService');
  *
  *   # Create agents for internal staff
  *   node config/sync-office-agents.js --group=group_internal_staff --apply
+ *
+ *   # Create agents for all users (public access)
+ *   node config/sync-office-agents.js --public --apply
  *
  *   # Create agents for a specific tenant
  *   node config/sync-office-agents.js --tenant=tenant_abc --author=admin@example.com --apply
@@ -54,6 +58,8 @@ function parseArgs(argv) {
     tenantId: '',
     authorEmail: '',
     groupId: '',
+    isPublic: false,
+    reset: false,
   };
 
   for (const arg of argv) {
@@ -68,6 +74,10 @@ function parseArgs(argv) {
       args.authorEmail = arg.slice('--author='.length).trim();
     } else if (arg.startsWith('--group=')) {
       args.groupId = arg.slice('--group='.length).trim();
+    } else if (arg === '--public') {
+      args.isPublic = true;
+    } else if (arg === '--reset') {
+      args.reset = true;
     } else if (arg === '--help') {
       printUsage();
       process.exit(0);
@@ -88,6 +98,8 @@ Options:
   --tenant=<id>         Tenant ID (omit for platform-wide agents)
   --author=<email>      Owner email (defaults to first platform ADMIN)
   --group=<id>          Group ID to grant AGENT_VIEWER (for delegation)
+  --public              Grant AGENT_VIEWER to all users (PUBLIC principal)
+  --reset               Clear existing ACL entries before granting new permissions
   --apply               Create/update agents (default: dry run only)
   --help                Show this message
 
@@ -97,6 +109,12 @@ Examples:
 
   # Create for internal staff group
   node config/sync-office-agents.js --group=group_internal_staff --apply
+
+  # Create for all users (public access)
+  node config/sync-office-agents.js --public --apply
+
+  # Override existing permissions (reset + public)
+  node config/sync-office-agents.js --reset --public --apply
 
   # Create for a tenant
   node config/sync-office-agents.js --tenant=tenant_xyz --author=admin@bdren.net.bd --apply
@@ -203,23 +221,37 @@ async function createOrUpdateAgent(agentDef, author, dryRun) {
   return agent;
 }
 
-async function grantAgentPermissions(agent, author, groupId, tenantId, dryRun) {
+async function clearAgentPermissions(agent, dryRun) {
+  if (dryRun) return;
+
+  console.log(`[reset] Clearing ACL entries for "${agent.name}" (${agent.id})`);
+  await runAsSystem(async () => {
+    await mongoose.models.AclEntry.deleteMany({
+      resourceId: agent._id,
+    }).exec();
+  });
+}
+
+async function grantAgentPermissions(agent, author, groupId, tenantId, isPublic, dryRun) {
   if (dryRun) return;
 
   const grants = [];
 
   // Grant OWNER to author
-  grants.push(
-    grantPermission({
+  console.log(`  [debug] Granting OWNER to ${author.email}`);
+  try {
+    const ownerResult = await grantPermission({
       principalType: PrincipalType.USER,
       principalId: author._id,
       resourceType: ResourceType.AGENT,
       resourceId: agent._id,
       accessRoleId: AccessRoleIds.AGENT_OWNER,
       grantedBy: author._id,
-      tenantId: tenantId || undefined,
-    }),
-  );
+    });
+    console.log(`  [debug] OWNER grant result:`, ownerResult ? 'success' : 'null');
+  } catch (err) {
+    console.error(`[error] OWNER grant failed:`, err.message);
+  }
 
   // Grant REMOTE_AGENT_OWNER to author (for subagent execution)
   grants.push(
@@ -231,6 +263,9 @@ async function grantAgentPermissions(agent, author, groupId, tenantId, dryRun) {
       accessRoleId: AccessRoleIds.REMOTE_AGENT_OWNER,
       grantedBy: author._id,
       tenantId: tenantId || undefined,
+    }).catch(err => {
+      console.error(`[error] Failed to grant REMOTE_AGENT_OWNER to ${author.email}: ${err.message}`);
+      return null;
     }),
   );
 
@@ -245,6 +280,9 @@ async function grantAgentPermissions(agent, author, groupId, tenantId, dryRun) {
         accessRoleId: AccessRoleIds.AGENT_VIEWER,
         grantedBy: author._id,
         tenantId: tenantId || undefined,
+      }).catch(err => {
+        console.error(`[error] Failed to grant VIEWER to group ${groupId}: ${err.message}`);
+        return null;
       }),
     );
 
@@ -258,11 +296,90 @@ async function grantAgentPermissions(agent, author, groupId, tenantId, dryRun) {
         accessRoleId: AccessRoleIds.REMOTE_AGENT_VIEWER,
         grantedBy: author._id,
         tenantId: tenantId || undefined,
+      }).catch(err => {
+        console.error(`[error] Failed to grant REMOTE_AGENT_VIEWER to group ${groupId}: ${err.message}`);
+        return null;
       }),
     );
   }
 
+  // Grant AGENT_VIEWER to all users (PUBLIC principal)
+  if (isPublic) {
+    console.log(`  [debug] Granting PUBLIC for agent ${agent.id}`);
+    try {
+      const result = await grantPermission({
+        principalType: PrincipalType.PUBLIC,
+        resourceType: ResourceType.AGENT,
+        resourceId: agent._id,
+        accessRoleId: AccessRoleIds.AGENT_VIEWER,
+        grantedBy: author._id,
+      });
+      console.log(`  [debug] Grant result:`, result ? 'success' : 'null');
+    } catch (err) {
+      console.error(`[error] PUBLIC AGENT_VIEWER failed:`, err.message);
+    }
+  }
+
   await Promise.all(grants);
+}
+
+async function ensureAccessRolesExist(dryRun) {
+  if (dryRun) return;
+
+  const AccessRole = mongoose.models.AccessRole;
+  if (!AccessRole) {
+    console.log('[info] AccessRole model not available, skipping role seeding');
+    return;
+  }
+
+  const rolesToEnsure = [
+    {
+      accessRoleId: AccessRoleIds.AGENT_VIEWER,
+      name: 'Agent Viewer',
+      description: 'Can view and use agents',
+      resourceType: ResourceType.AGENT,
+      permBits: PermissionBits.VIEW,
+    },
+    {
+      accessRoleId: AccessRoleIds.AGENT_EDITOR,
+      name: 'Agent Editor',
+      description: 'Can view and edit agents',
+      resourceType: ResourceType.AGENT,
+      permBits: PermissionBits.VIEW | PermissionBits.EDIT,
+    },
+    {
+      accessRoleId: AccessRoleIds.AGENT_OWNER,
+      name: 'Agent Owner',
+      description: 'Full control over agents',
+      resourceType: ResourceType.AGENT,
+      permBits: PermissionBits.VIEW | PermissionBits.EDIT | PermissionBits.DELETE | PermissionBits.SHARE,
+    },
+    {
+      accessRoleId: AccessRoleIds.REMOTE_AGENT_VIEWER,
+      name: 'Remote Agent Viewer',
+      description: 'Can view and use remote agents',
+      resourceType: ResourceType.REMOTE_AGENT,
+      permBits: PermissionBits.VIEW,
+    },
+    {
+      accessRoleId: AccessRoleIds.REMOTE_AGENT_OWNER,
+      name: 'Remote Agent Owner',
+      description: 'Full control over remote agents',
+      resourceType: ResourceType.REMOTE_AGENT,
+      permBits: PermissionBits.VIEW | PermissionBits.EDIT | PermissionBits.DELETE | PermissionBits.SHARE,
+    },
+  ];
+
+  for (const roleDef of rolesToEnsure) {
+    const existing = await runAsSystem(() =>
+      AccessRole.findOne({ accessRoleId: roleDef.accessRoleId }).lean().exec(),
+    );
+
+    if (!existing) {
+      console.log(`[create] Access role "${roleDef.name}" (${roleDef.accessRoleId})`);
+      await runAsSystem(() => AccessRole.create(roleDef));
+    }
+  }
 }
 
 async function setupSubagentConnections(master, specialists, dryRun) {
@@ -297,6 +414,7 @@ async function main() {
     console.log(`Author: ${author.email}`);
     if (args.tenantId) console.log(`Tenant: ${args.tenantId}`);
     if (args.groupId) console.log(`Group:  ${args.groupId}`);
+    if (args.isPublic) console.log('Public: all users');
     console.log('');
 
     // Create/update master agent
@@ -322,15 +440,32 @@ async function main() {
       console.log(`[wire] ${specialists.length} handoff edge(s) from master to specialists`);
     }
 
+    // Ensure access roles exist
+    if (!args.dryRun) {
+      console.log('\n--- Access Roles ---');
+      await ensureAccessRolesExist(args.dryRun);
+    }
+
     // Grant permissions
     if (!args.dryRun) {
       console.log('\n--- Permissions ---');
-      await grantAgentPermissions(master, author, args.groupId, args.tenantId, args.dryRun);
+
+      // Clear existing permissions if --reset is used
+      if (args.reset) {
+        console.log('[reset] Clearing existing permissions...');
+        await clearAgentPermissions(master, args.dryRun);
+        for (const spec of specialists) {
+          await clearAgentPermissions(spec, args.dryRun);
+        }
+      }
+
+      await grantAgentPermissions(master, author, args.groupId, args.tenantId, args.isPublic, args.dryRun);
       console.log(`[grant] OWNER to ${author.email}`);
       if (args.groupId) console.log(`[grant] VIEWER to group ${args.groupId}`);
+      if (args.isPublic) console.log(`[grant] VIEWER to all users (PUBLIC)`);
 
       for (const spec of specialists) {
-        await grantAgentPermissions(spec, author, args.groupId, args.tenantId, args.dryRun);
+        await grantAgentPermissions(spec, author, args.groupId, args.tenantId, args.isPublic, args.dryRun);
       }
 
       // Scope to tenant if provided

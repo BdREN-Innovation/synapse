@@ -61,6 +61,10 @@ const ensureLocalGroupPrincipalExists = async (principalId) => {
  * @param {string} params.accessRoleId - The ID of the role (e.g., AccessRoleIds.AGENT_VIEWER, AccessRoleIds.AGENT_EDITOR)
  * @param {string|mongoose.Types.ObjectId} params.grantedBy - User ID granting the permission
  * @param {mongoose.ClientSession} [params.session] - Optional MongoDB session for transactions
+ * @param {string} [params.tenantId] - Explicit tenant to stamp on the entry. Only needed when
+ *   the caller isn't already running inside that tenant's ambient request context (e.g. an
+ *   admin script) — ordinary in-app grants pick up the correct tenant automatically and don't
+ *   need to pass this.
  * @returns {Promise<Object>} The created or updated ACL entry
  */
 const grantPermission = async ({
@@ -71,6 +75,7 @@ const grantPermission = async ({
   accessRoleId,
   grantedBy,
   session,
+  tenantId,
 }) => {
   try {
     if (!Object.values(PrincipalType).includes(principalType)) {
@@ -123,6 +128,8 @@ const grantPermission = async ({
       grantedBy,
       session,
       role._id,
+      undefined,
+      tenantId,
     );
   } catch (error) {
     logger.error(`[PermissionService.grantPermission] Error: ${error.message}`);

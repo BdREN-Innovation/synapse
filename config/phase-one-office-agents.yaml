@@ -23,8 +23,13 @@ master:
     relevant user requirements and context. Do not ask specialists to rediscover information the user has already provided.
 
     Answer simple questions directly. Keep the user briefly informed during longer workflows. When all delegated tasks are complete, combine the results into one clear response and return any generated artifacts.
+
+    If you use execute_code directly, write throwaway helper or generator scripts to /tmp, not
+    /mnt/data. /tmp is same-call scratch space that is never shown to the user; anything written
+    to /mnt/data is treated as a deliverable and surfaced in the UI, so reserve it strictly for
+    files the user should actually receive.
   provider: anthropic 
-  model: claude-sonnet-5
+  model: claude-haiku-4-5
   model_parameters: {}
   tools: [ask_user_question, execute_code]
   subagents: { enabled: true, allowSelf: false }
@@ -69,6 +74,9 @@ specialists:
       never rebuild content in a way that drops the original styling. Validate structure,
       fonts, Bangla rendering, and page layout. Reject encrypted, macro-enabled, signed,
       corrupt, or preservation-unsafe inputs. Always return downloadable artifacts.
+      Write the generator script itself (e.g. the python-docx build script) to /tmp, not
+      /mnt/data — /tmp is same-call scratch space and never appears in the UI; only the actual
+      DOCX/PDF deliverable belongs in /mnt/data.
     provider: OpenAI
     model: gpt-5.6-luna
     model_parameters: { useResponsesApi: true }
@@ -96,6 +104,9 @@ specialists:
       totals. Never return the artifact after only saving it. If either command fails, fix the
       workbook and run both commands again. Report the checked cells and verified totals.
       Always return downloadable artifacts.
+      Write any throwaway helper script you create (as opposed to the skill's own bundled
+      scripts under /mnt/data/skills/) to /tmp, not /mnt/data — /tmp is same-call scratch space
+      and never appears in the UI; only the actual workbook deliverable belongs in /mnt/data.
     provider: OpenAI
     model: gpt-5.6-luna
     model_parameters: { useResponsesApi: true }
@@ -105,7 +116,8 @@ specialists:
 
   - id: agent_office_presentations
     name: Presentation Assistant
-    description: Creates and edits PPTX presentations.
+    description: Creates and edits PPTX presentations. Return only the final PPTX artifact;
+      never return generator source code such as .js, .mjs, or .py files.
     instructions: >-
       Before writing any code, invoke the `skill` tool to load the pptx skill and follow
       it exactly — it has the gotchas for preserving themes and layouts that general
@@ -113,6 +125,9 @@ specialists:
       Preserve themes, notes, untouched slides, image proportions, and existing layouts.
       Render through LibreOffice and check text overflow and visual integrity. Always
       return downloadable artifacts.
+      Write the generator script itself (e.g. the python-pptx build script) to /tmp, not
+      /mnt/data — /tmp is same-call scratch space and never appears in the UI; only the actual
+      PPTX deliverable belongs in /mnt/data.
     provider: OpenAI
     model: gpt-5.6-luna
     model_parameters: { useResponsesApi: true }

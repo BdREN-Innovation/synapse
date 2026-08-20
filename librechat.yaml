@@ -49,17 +49,17 @@ interface:
   parameters: false
   presets: true
   prompts:
-    use: true
-    create: true
+    use: false
+    create: false
     share: false
     public: false
   bookmarks: false
-  multiConvo: true
+  multiConvo: false
   agents:
     use: true
     create: false
     share: false
-    public: false
+    public: true
   marketplace:
     use: false
   fileCitations: true
@@ -68,25 +68,25 @@ modelSpecs:
   enforce: true
   prioritize: true
   list:
-    - name: glm-4.6v
-      label: BdREN AI (GLM 4.6V)
-      askUserQuestion: true
-      group: BdREN AI
-      preset:
-        endpoint: BdREN AI
-        model: glm-4.6v
+    # - name: glm-4.6v
+    #   label: BdREN AI (GLM 4.6V)
+    #   askUserQuestion: true
+    #   group: BdREN AI
+    #   preset:
+    #     endpoint: BdREN AI
+    #     model: glm-4.6v
 
     - name: office-assistant
       label: Office Assistant
       description: General office assistant with document, spreadsheet, presentation, mail, and image delegation.
       default: true
-      group: Agents
+      # group: Agents
       preset:
         endpoint: agents
         agent_id: agent_office_assistant
 
     - name: gpt-5.6-luna
-      label: GPT-5.6 Luna
+      label: ChatGPT 
       askUserQuestion: true
       preset:
         endpoint: OpenAI
@@ -103,19 +103,19 @@ modelSpecs:
           Do not ask for passwords, payment information, or other unnecessary
           sensitive data. Do not ask for greetings or simple factual questions.
 
-    - name: claude-sonnet-4-5
-      label: Sonnet 4.5
-      askUserQuestion: true
-      preset:
-        endpoint: Claude
-        model: claude-sonnet-4-5
-        # Cache reads run ~10x cheaper than fresh input (tx.ts cacheTokenValues) —
-        # worth enabling by default since document-editing sessions repeatedly
-        # resend large, mostly-unchanged file/context content across turns.
-        promptCache: true
+    # - name: claude-sonnet-4-5
+    #   label: Sonnet 4.5
+    #   askUserQuestion: true
+    #   preset:
+    #     endpoint: Claude
+    #     model: claude-sonnet-4-5
+    #     # Cache reads run ~10x cheaper than fresh input (tx.ts cacheTokenValues) —
+    #     # worth enabling by default since document-editing sessions repeatedly
+    #     # resend large, mostly-unchanged file/context content across turns.
+    #     promptCache: true
 
     - name: claude-haiku-4-5
-      label: Haiku 4.5
+      label: Claude
       askUserQuestion: true
       preset:
         endpoint: Claude
@@ -132,16 +132,16 @@ modelSpecs:
           Do not ask for passwords, payment information, or other unnecessary
           sensitive data. Do not ask for greetings or simple factual questions.
 
-    - name: nvidia/nemotron-3.5-lightning
-      label: nvidia/nemotron-3.5-lightning
-      askUserQuestion: true
-      preset:
-        endpoint: OpenRouter
-        model: nvidia/nemotron-3.5-lightning
-        promptCache: true
+    # - name: nvidia/nemotron-3.5-lightning
+    #   label: Nemotron-3.5
+    #   askUserQuestion: true
+    #   preset:
+    #     endpoint: OpenRouter
+    #     model: nvidia/nemotron-3.5-lightning
+    #     promptCache: true
     
     - name: google/gemini-3.1-flash-image
-      label: Nano Banana 2
+      label: Image Generation
       preset:
         endpoint: OpenRouter Image
         model: google/gemini-3.1-flash-image
@@ -180,16 +180,17 @@ endpoints:
     titleModel: 'claude-haiku-4-5'
 
   custom:
-    - name: BdREN AI
-      apiKey: '${BDREN_AI_API_KEY}'
-      baseURL: 'https://llm.shuvoo.com/v1'
-      models:
-        default:
-          - 'glm-4.6v'
-        fetch: false
-      titleConvo: true
-      titleModel: 'glm-4.6v'
-      modelDisplayLabel: 'BdREN AI'
+
+    # - name: BdREN AI
+    #   apiKey: '${BDREN_AI_API_KEY}'
+    #   baseURL: 'https://llm.shuvoo.com/v1'
+    #   models:
+    #     default:
+    #       - 'glm-4.6v'
+    #     fetch: false
+    #   titleConvo: true
+    #   titleModel: 'glm-4.6v'
+    #   modelDisplayLabel: 'BdREN AI'
 
     - name: OpenAI
       apiKey: '${OPENAI_API_KEY}'
@@ -206,7 +207,7 @@ endpoints:
       baseURL: 'https://api.anthropic.com'
       models:
         default:
-          - 'claude-sonnet-4-5'
+          - 'claude-sonnet-5'
           - 'claude-haiku-4-5'
         fetch: false
       modelDisplayLabel: Claude
@@ -219,6 +220,7 @@ endpoints:
       models:
         default:
           - 'google/gemma-4-31b-it'
+          - ''
         fetch: false
       titleConvo: true
       dropParams: ['stop']

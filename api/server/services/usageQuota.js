@@ -1196,4 +1196,5 @@ module.exports = {
   releaseUsage,
   reserveUsage,
   settleUsage,
+  zonedDateTimeToUtc,
 };

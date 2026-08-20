@@ -1,6 +1,6 @@
 const mongoose = require('mongoose');
 const { runAsSystem, tenantStorage } = require('@librechat/data-schemas');
-const { getCalendarMonthRange } = require('./usageQuota');
+const { getCalendarMonthRange, zonedDateTimeToUtc } = require('./usageQuota');
 const models = require('~/db/models');
 
 class HttpError extends Error {
@@ -10,9 +10,28 @@ class HttpError extends Error {
   }
 }
 
-function parseDateBoundary(value, label) {
+function parseDateBoundary(value, label, timeZone) {
   if (value == null || value === '') {
     return null;
+  }
+
+  // Date inputs submit YYYY-MM-DD. Treat the end date as inclusive and
+  // resolve both boundaries in the institution timezone instead of UTC.
+  const dateOnly = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(value));
+  if (dateOnly) {
+    const [, year, month, day] = dateOnly.map(Number);
+    const date = zonedDateTimeToUtc(
+      {
+        year,
+        month,
+        day: label === 'end' ? day + 1 : day,
+      },
+      timeZone,
+    );
+    if (Number.isNaN(date.getTime())) {
+      throw new HttpError(400, `Invalid ${label} date`);
+    }
+    return date;
   }
 
   const parsed = new Date(value);
@@ -34,8 +53,8 @@ async function resolveRange(tenantId, { start, end } = {}) {
     timezone = institution.timezone;
   }
   const defaults = getCalendarMonthRange(timezone);
-  const startDate = parseDateBoundary(start, 'start') ?? defaults.start;
-  const endDate = parseDateBoundary(end, 'end') ?? defaults.end;
+  const startDate = parseDateBoundary(start, 'start', timezone) ?? defaults.start;
+  const endDate = parseDateBoundary(end, 'end', timezone) ?? defaults.end;
 
   if (startDate >= endDate) {
     throw new HttpError(400, 'The start date must be earlier than the end date');
