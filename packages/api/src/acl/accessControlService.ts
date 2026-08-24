@@ -33,6 +33,10 @@ export class AccessControlService {
    * @param {Types.ObjectId} params.grantedBy - User ID granting the permission
    * @param {ClientSession} [params.session] - Optional MongoDB session for transactions
    * @param {Date} [params.expiredAt] - Optional expiration for resource-tied permissions
+   * @param {string} [params.tenantId] - Explicit tenant to stamp on the entry. Only needed when
+   *   the caller isn't already running inside that tenant's ambient request context (e.g. an
+   *   admin script) — ordinary in-app grants pick up the correct tenant automatically and don't
+   *   need to pass this.
    * @returns {Promise<IAclEntry>} The created or updated ACL entry
    */
   public async grantPermission(args: {
@@ -46,6 +50,7 @@ export class AccessControlService {
     session?: ClientSession;
     roleId?: string | Types.ObjectId;
     expiredAt?: Date;
+    tenantId?: string;
   }): Promise<IAclEntry | null> {
     const {
       principalType,
@@ -56,6 +61,7 @@ export class AccessControlService {
       grantedBy,
       session,
       expiredAt,
+      tenantId,
     } = args;
     try {
       if (!Object.values(PrincipalType).includes(principalType)) {
@@ -109,6 +115,7 @@ export class AccessControlService {
         session,
         role._id,
         expiredAt,
+        tenantId,
       );
     } catch (error) {
       logger.error(

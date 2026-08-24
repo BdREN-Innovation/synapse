@@ -10,6 +10,7 @@ import type {
 import type { AclEntry, IAclEntry } from '~/types';
 import { tenantSafeBulkWrite } from '~/utils/tenantBulkWrite';
 import { MAX_PERM_BITS } from '~/common/permissions';
+import { runAsSystem } from '~/config/tenantContext';
 
 /**
  * Empty frozen array shared by every rejection path. Returning a single
@@ -117,6 +118,7 @@ export function createAclEntryMethods(mongoose: typeof import('mongoose')): {
     session?: ClientSession,
     roleId?: string | Types.ObjectId,
     expiredAt?: Date,
+    tenantId?: string,
   ) => Promise<IAclEntry | null>;
   revokePermission: (
     principalType: string,
@@ -336,6 +338,15 @@ export function createAclEntryMethods(mongoose: typeof import('mongoose')): {
    * @param grantedBy - The ID of the user granting the permission
    * @param session - Optional MongoDB session for transactions
    * @param roleId - Optional role ID to associate with this permission
+   * @param expiredAt - Optional expiry for the grant
+   * @param tenantId - Explicit tenant to stamp on the entry. Only needed when
+   *   the caller isn't already running inside that tenant's ambient request
+   *   context (e.g. an admin script) — ordinary in-app grants pick up the
+   *   correct tenant automatically via the ambient context on the upsert
+   *   filter and don't need to pass this. When provided, the write runs
+   *   under `runAsSystem` so the tenant-isolation guard (which otherwise
+   *   blocks any `tenantId` mutation that doesn't match the caller's own
+   *   ambient tenant) doesn't reject the explicit value.
    * @returns The created or updated ACL entry
    */
   async function grantPermission(
@@ -348,6 +359,7 @@ export function createAclEntryMethods(mongoose: typeof import('mongoose')): {
     session?: ClientSession,
     roleId?: string | Types.ObjectId,
     expiredAt?: Date,
+    tenantId?: string,
   ): Promise<IAclEntry | null> {
     const AclEntry = mongoose.models.AclEntry as Model<IAclEntry>;
     const query: Record<string, unknown> = {
@@ -377,6 +389,7 @@ export function createAclEntryMethods(mongoose: typeof import('mongoose')): {
         ...(grantedBy && { grantedBy }),
         ...(roleId && { roleId }),
         ...(expiredAt && { expiredAt }),
+        ...(tenantId && { tenantId }),
       },
     };
 
@@ -386,7 +399,11 @@ export function createAclEntryMethods(mongoose: typeof import('mongoose')): {
       ...(session ? { session } : {}),
     };
 
-    return await AclEntry.findOneAndUpdate(query, update, options);
+    // `runAsSystem` requires an async callback — a sync callback merely
+    // returning the Mongoose thenable loses the AsyncLocalStorage context
+    // before the query actually executes.
+    const write = async () => await AclEntry.findOneAndUpdate(query, update, options);
+    return tenantId ? await runAsSystem(write) : await write();
   }
 
   /**

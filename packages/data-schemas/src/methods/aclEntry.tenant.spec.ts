@@ -112,3 +112,61 @@ describe('AclEntry resource lookups are scoped to the active tenant', () => {
     expect(bPublic.map(String)).toEqual([String(publicB)]);
   });
 });
+
+describe('grantPermission with an explicit tenantId (out-of-request-context callers)', () => {
+  it('stamps the entry with the given tenant even when called with no ambient tenant context, and the grant is then visible under that tenant', async () => {
+    const principalId = new mongoose.Types.ObjectId();
+    const resourceId = new mongoose.Types.ObjectId();
+
+    // No `tenantStorage.run` wrapper here — this reproduces a script/CLI
+    // caller (e.g. config/sync-office-agents.js) that has no ambient
+    // per-request tenant context, only an explicit target tenant.
+    await methods.grantPermission(
+      PrincipalType.GROUP,
+      principalId,
+      RESOURCE_TYPE,
+      resourceId,
+      PermissionBits.VIEW,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      TENANT_A,
+    );
+
+    const stored = await AclEntry.findOne({ resourceId }).lean();
+    expect(stored?.tenantId).toBe(TENANT_A);
+
+    const principals = [{ principalType: PrincipalType.GROUP, principalId }];
+    const visibleInA = await runAs(TENANT_A, () =>
+      methods.findAccessibleResources(principals, RESOURCE_TYPE, PermissionBits.VIEW),
+    );
+    expect(visibleInA.map(String)).toEqual([String(resourceId)]);
+
+    const visibleInB = await runAs(TENANT_B, () =>
+      methods.findAccessibleResources(principals, RESOURCE_TYPE, PermissionBits.VIEW),
+    );
+    expect(visibleInB).toEqual([]);
+  });
+
+  it('does not require or set tenantId when the caller omits it (ordinary ambient-context grants are unaffected)', async () => {
+    const principalId = new mongoose.Types.ObjectId();
+    const resourceId = new mongoose.Types.ObjectId();
+
+    await runAs(TENANT_A, () =>
+      methods.grantPermission(
+        PrincipalType.USER,
+        principalId,
+        RESOURCE_TYPE,
+        resourceId,
+        PermissionBits.VIEW,
+      ),
+    );
+
+    const stored = await AclEntry.findOne({ resourceId }).lean();
+    // Ambient-context upserts still pick up the tenant via the query
+    // filter injected by tenantIsolation's queryMiddleware — unchanged
+    // by the new explicit-tenantId parameter.
+    expect(stored?.tenantId).toBe(TENANT_A);
+  });
+});

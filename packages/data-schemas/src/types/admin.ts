@@ -116,6 +116,11 @@ export const AUDIT_ACTIONS = [
   'platform_admin.granted',
   'platform_admin.deactivated',
   'platform_admin.reactivated',
+  'config.global_replaced',
+  'config.global_patched',
+  'config.global_field_reset',
+  'config.global_imported',
+  'config.global_reset',
 ] as const;
 export type AuditAction = (typeof AUDIT_ACTIONS)[number];
 
@@ -148,6 +153,11 @@ export const AUDIT_ACTION_CATEGORY: Record<AuditAction, AuditCategory> = {
   'platform_admin.granted': 'platform',
   'platform_admin.deactivated': 'platform',
   'platform_admin.reactivated': 'platform',
+  'config.global_replaced': 'config',
+  'config.global_patched': 'config',
+  'config.global_field_reset': 'config',
+  'config.global_imported': 'config',
+  'config.global_reset': 'config',
 };
 
 /** Result of the audited operation. Kept first-class instead of being encoded
