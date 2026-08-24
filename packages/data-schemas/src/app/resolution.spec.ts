@@ -58,6 +58,29 @@ describe('mergeConfigOverrides', () => {
     });
   });
 
+  it('applies modelSpecs overrides from the global base principal', () => {
+    const result = mergeConfigOverrides(baseConfig, [
+      fakeConfig(
+        { modelSpecs: { list: [{ name: 'gpt-5.6-luna', label: 'ChatGPT2' }] } },
+        10,
+        undefined,
+        BASE_CONFIG_PRINCIPAL_ID,
+      ),
+    ]) as unknown as Record<string, unknown>;
+
+    expect((result.modelSpecs as Record<string, unknown>).list).toEqual([
+      { name: 'gpt-5.6-luna', label: 'ChatGPT2' },
+    ]);
+  });
+
+  it('ignores modelSpecs overrides from non-base principals', () => {
+    const result = mergeConfigOverrides(baseConfig, [
+      fakeConfig({ modelSpecs: { list: [{ name: 'role-spec', label: 'Role spec' }] } }, 10),
+    ]) as unknown as Record<string, unknown>;
+
+    expect(result.modelSpecs).toEqual(baseConfig.modelSpecs);
+  });
+
   it('ignores tenant-wide Langfuse tombstones outside the base principal', () => {
     const base = {
       ...baseConfig,

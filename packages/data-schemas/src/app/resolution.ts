@@ -212,8 +212,11 @@ export function mergeConfigOverrides(baseConfig: AppConfig, configs: IConfig[]):
     if (config.overrides && typeof config.overrides === 'object') {
       const remapped: AnyObject = {};
       for (const [key, value] of Object.entries(config.overrides)) {
+        // Base-only sections (for example modelSpecs) may be changed by the
+        // global/base principal, but must never be inherited from a role,
+        // group, or user profile override.
         if (
-          BASE_ONLY_OVERRIDE_SECTIONS.has(key) ||
+          (!isBasePrincipal && BASE_ONLY_OVERRIDE_SECTIONS.has(key)) ||
           (!isBasePrincipal && BASE_PRINCIPAL_OVERRIDE_SECTIONS.has(key))
         ) {
           continue;
