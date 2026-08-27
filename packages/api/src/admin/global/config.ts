@@ -18,6 +18,26 @@ import { getTopLevelSection, isValidFieldPath } from '../config';
 
 const DEFAULT_PRIORITY = 10;
 const MAX_PATCH_ENTRIES = 100;
+const RESTART_REQUIRED_SECTIONS = new Set([
+  'cache',
+  'fileStrategy',
+  'fileStrategies',
+  'fileConfig',
+  'cloudfront',
+]);
+
+function applicationState(paths: string[], config: IConfig | null, reloadPerformed = true) {
+  const affectedPaths = [...new Set(paths)].filter(Boolean);
+  const mode = affectedPaths.some((path) => RESTART_REQUIRED_SECTIONS.has(path.split('.')[0]))
+    ? 'restart-required'
+    : 'hot-reloadable';
+  return {
+    mode,
+    affectedPaths,
+    effectiveVersion: String(versionOf(config)),
+    reloadPerformed,
+  } as const;
+}
 
 export interface GlobalConfigDeps {
   findConfigByPrincipal: (
@@ -154,7 +174,10 @@ export function createGlobalConfigHandlers(deps: GlobalConfigDeps): {
       const after = await deps.upsertConfig(PrincipalType.ROLE, BASE_CONFIG_PRINCIPAL_ID, PrincipalModel.ROLE, preserveConfigSecrets(encrypted, current?.overrides), body.priority ?? current?.priority ?? DEFAULT_PRIORITY);
       await audit(req, req.path.endsWith('/import') ? 'config.global_imported' : 'config.global_replaced', current, after, req.path.endsWith('/import') ? 'import' : 'replace');
       await deps.invalidateConfigCaches?.();
-      return res.status(200).json({ config: safeConfig(after) });
+      return res.status(200).json({
+        config: safeConfig(after),
+        application: applicationState(Object.keys(body.overrides), after),
+      });
     } catch (error) {
       logger.error('[globalConfig] replace failed', error);
       return res.status(500).json({ error: 'Failed to replace global config' });
@@ -177,7 +200,10 @@ export function createGlobalConfigHandlers(deps: GlobalConfigDeps): {
       const after = await deps.patchConfigFields(PrincipalType.ROLE, BASE_CONFIG_PRINCIPAL_ID, PrincipalModel.ROLE, encryptConfigSecretFields(fields), current?.priority ?? DEFAULT_PRIORITY);
       await audit(req, 'config.global_patched', current, after, `patch:${Object.keys(fields).map(getTopLevelSection).join(',')}`);
       await deps.invalidateConfigCaches?.();
-      return res.status(200).json({ config: safeConfig(after) });
+      return res.status(200).json({
+        config: safeConfig(after),
+        application: applicationState(Object.keys(fields), after),
+      });
     } catch (error) {
       logger.error('[globalConfig] patch failed', error);
       return res.status(500).json({ error: 'Failed to patch global config' });
@@ -194,7 +220,10 @@ export function createGlobalConfigHandlers(deps: GlobalConfigDeps): {
       for (const path of getConfigSecretMutationPaths(fieldPath)) after = await deps.unsetConfigField(PrincipalType.ROLE, BASE_CONFIG_PRINCIPAL_ID, path);
       await audit(req, 'config.global_field_reset', current, after, `reset:${fieldPath}`);
       await deps.invalidateConfigCaches?.();
-      return res.status(200).json({ config: safeConfig(after) });
+      return res.status(200).json({
+        config: safeConfig(after),
+        application: applicationState([fieldPath], after),
+      });
     } catch (error) {
       logger.error('[globalConfig] reset field failed', error);
       return res.status(500).json({ error: 'Failed to reset global field' });
@@ -208,7 +237,11 @@ export function createGlobalConfigHandlers(deps: GlobalConfigDeps): {
       const deleted = await deps.deleteConfig(PrincipalType.ROLE, BASE_CONFIG_PRINCIPAL_ID);
       await audit(req, 'config.global_reset', current, null, 'reset');
       await deps.invalidateConfigCaches?.();
-      return res.status(200).json({ success: true, configVersion: versionOf(deleted) });
+      return res.status(200).json({
+        success: true,
+        configVersion: versionOf(deleted),
+        application: applicationState(['*'], deleted),
+      });
     } catch (error) {
       logger.error('[globalConfig] reset failed', error);
       return res.status(500).json({ error: 'Failed to reset global config' });

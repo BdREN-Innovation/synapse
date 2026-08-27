@@ -121,6 +121,7 @@ export const AUDIT_ACTIONS = [
   'config.global_field_reset',
   'config.global_imported',
   'config.global_reset',
+  'platform.agent_catalog_synced',
 ] as const;
 export type AuditAction = (typeof AUDIT_ACTIONS)[number];
 
@@ -158,6 +159,7 @@ export const AUDIT_ACTION_CATEGORY: Record<AuditAction, AuditCategory> = {
   'config.global_field_reset': 'config',
   'config.global_imported': 'config',
   'config.global_reset': 'config',
+  'platform.agent_catalog_synced': 'platform',
 };
 
 /** Result of the audited operation. Kept first-class instead of being encoded

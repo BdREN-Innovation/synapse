@@ -23,6 +23,13 @@ export interface IAgent extends Omit<Document, 'model'> {
   };
   provider: string;
   model: string;
+  /** Capabilities explicitly enabled for this agent by the global catalog. */
+  capabilities?: string[];
+  /** Stable presentation metadata managed by the platform agent catalog. */
+  icon?: string;
+  displayOrder?: number;
+  directSelection?: boolean;
+  orchestrationOnly?: boolean;
   model_parameters?: Record<string, unknown>;
   artifacts?: string;
   access_level?: number;

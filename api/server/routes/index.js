@@ -16,6 +16,7 @@ const adminAuditLog = require('./admin/audit');
 const platformInstitutions = require('./platform/institutions');
 const platformUsers = require('./platform/users');
 const platformInstitutionPackages = require('./platform/institutionPackages');
+const platformAgentsCatalog = require('./platform/agentsCatalog');
 const endpoints = require('./endpoints');
 const staticRoute = require('./static');
 const messages = require('./messages');
@@ -63,6 +64,7 @@ module.exports = {
   platformInstitutions,
   platformUsers,
   platformInstitutionPackages,
+  platformAgentsCatalog,
   keys,
   apiKeys,
   user,

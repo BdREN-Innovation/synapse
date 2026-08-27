@@ -28,6 +28,27 @@ const agentSchema: Schema<IAgent> = new Schema<IAgent>(
       type: String,
       required: true,
     },
+    capabilities: {
+      type: [String],
+      default: [],
+    },
+    icon: {
+      type: String,
+      default: undefined,
+    },
+    displayOrder: {
+      type: Number,
+      default: 0,
+      min: 0,
+    },
+    directSelection: {
+      type: Boolean,
+      default: true,
+    },
+    orchestrationOnly: {
+      type: Boolean,
+      default: false,
+    },
     model_parameters: {
       type: Object,
     },
