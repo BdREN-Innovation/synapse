@@ -13,6 +13,8 @@ import {
   summarizationConfigSchema,
   retainRecentConfigSchema,
   MAX_SUBAGENTS,
+  MAX_SUBAGENTS_CEILING,
+  setMaxSubagents,
 } from '../src/config';
 import {
   tModelSpecPresetSchema,
@@ -43,6 +45,40 @@ describe('paramDefinitionSchema', () => {
       descriptionSide: 'right',
     });
     expect(result.success).toBe(true);
+  });
+
+  /**
+   * The shared `SettingRange` exposes it, so a configured sentinel range would
+   * otherwise reach the UI with its positive floor silently dropped.
+   */
+  it('preserves a configured positiveMin on the range', () => {
+    const result = paramDefinitionSchema.safeParse({
+      key: 'thinkingBudget',
+      type: 'number',
+      component: 'slider',
+      range: { min: -1, max: 32768, step: 1, positiveMin: 128 },
+    });
+
+    expect(result.success).toBe(true);
+    expect(result.success && result.data.range).toEqual({
+      min: -1,
+      max: 32768,
+      step: 1,
+      positiveMin: 128,
+    });
+  });
+
+  /** The floor would admit nothing but the sentinel while the clamp maps every
+   *  non-negative input onto a maximum the generated schema then rejects. */
+  it('rejects a positiveMin above the range maximum', () => {
+    const result = paramDefinitionSchema.safeParse({
+      key: 'thinkingBudget',
+      type: 'number',
+      component: 'slider',
+      range: { min: -1, max: 100, positiveMin: 200 },
+    });
+
+    expect(result.success).toBe(false);
   });
 
   it('rejects columns > 4', () => {
@@ -411,6 +447,26 @@ describe('agentsEndpointSchema', () => {
     });
 
     expect(result.success).toBe(true);
+  });
+
+  it('defaults maxSubagents to MAX_SUBAGENTS and validates its bounds', () => {
+    const omitted = agentsEndpointSchema.safeParse({});
+    expect(omitted.success).toBe(true);
+    if (omitted.success) {
+      expect(omitted.data.maxSubagents).toBe(MAX_SUBAGENTS);
+    }
+
+    const raised = agentsEndpointSchema.safeParse({ maxSubagents: MAX_SUBAGENTS + 10 });
+    expect(raised.success).toBe(true);
+    if (raised.success) {
+      expect(raised.data.maxSubagents).toBe(MAX_SUBAGENTS + 10);
+    }
+
+    expect(agentsEndpointSchema.safeParse({ maxSubagents: 0 }).success).toBe(false);
+    expect(agentsEndpointSchema.safeParse({ maxSubagents: 2.5 }).success).toBe(false);
+    expect(
+      agentsEndpointSchema.safeParse({ maxSubagents: MAX_SUBAGENTS_CEILING + 1 }).success,
+    ).toBe(false);
   });
 
   it('rejects empty or unknown stateful code environment allowlists', () => {
@@ -1321,6 +1377,23 @@ describe('specsConfigSchema', () => {
       ],
     });
     expect(result.success).toBe(false);
+  });
+
+  it('validates model spec subagent ids against the configured cap', () => {
+    const raised = Array.from({ length: MAX_SUBAGENTS + 5 }, (_, i) => `agent_${i}`);
+    setMaxSubagents(MAX_SUBAGENTS + 10);
+    const withinRaised = specsConfigSchema.safeParse({
+      list: [
+        {
+          name: 'spec-1',
+          label: 'Spec 1',
+          preset: { endpoint: EModelEndpoint.openAI },
+          subagents: { enabled: true, agent_ids: raised },
+        },
+      ],
+    });
+    setMaxSubagents(undefined);
+    expect(withinRaised.success).toBe(true);
   });
 });
 

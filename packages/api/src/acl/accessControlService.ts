@@ -133,6 +133,8 @@ export class AccessControlService {
    * @param {string} [params.role] - Optional user role (if not provided, will query from DB)
    * @param {string} params.resourceType - Type of resource (e.g., 'agent')
    * @param {number} params.requiredPermissions - The minimum permission bits required (e.g., 1 for VIEW, 3 for VIEW+EDIT)
+   * @param {Types.ObjectId[]} [params.resourceIds] - Optional candidate bound; only these
+   *   resources are considered, so the query cost scales with the candidate set
    * @returns {Promise<Array>} Array of resource IDs
    */
   public async findAccessibleResources({
@@ -140,11 +142,13 @@ export class AccessControlService {
     role,
     resourceType,
     requiredPermissions,
+    resourceIds,
   }: {
     userId: string | Types.ObjectId;
     role?: string;
     resourceType: string;
     requiredPermissions: number;
+    resourceIds?: Types.ObjectId[];
   }): Promise<Types.ObjectId[]> {
     try {
       const principalsList = await this.getUserPrincipals({ userId, role });
@@ -152,6 +156,7 @@ export class AccessControlService {
         principalsList,
         resourceType,
         requiredPermissions,
+        resourceIds,
       });
     } catch (error) {
       if (error instanceof Error) {
@@ -179,10 +184,12 @@ export class AccessControlService {
     principalsList,
     resourceType,
     requiredPermissions,
+    resourceIds,
   }: {
     principalsList: ResolvedPrincipal[];
     resourceType: string;
     requiredPermissions: number;
+    resourceIds?: Types.ObjectId[];
   }): Promise<Types.ObjectId[]> {
     try {
       if (typeof requiredPermissions !== 'number' || requiredPermissions < 1) {
@@ -199,6 +206,7 @@ export class AccessControlService {
         principalsList,
         resourceType,
         requiredPermissions,
+        resourceIds,
       );
     } catch (error) {
       if (error instanceof Error) {
@@ -218,14 +226,18 @@ export class AccessControlService {
    * @param {Object} params - Parameters for finding publicly accessible resources
    * @param {ResourceType} params.resourceType - Type of resource (e.g., 'agent')
    * @param {number} params.requiredPermissions - The minimum permission bits required (e.g., 1 for VIEW, 3 for VIEW+EDIT)
+   * @param {Types.ObjectId[]} [params.resourceIds] - Optional candidate bound; only these
+   *   resources are considered, so the query cost scales with the candidate set
    * @returns {Promise<Types.ObjectId[]>} Array of resource IDs
    */
   public async findPubliclyAccessibleResources({
     resourceType,
     requiredPermissions,
+    resourceIds,
   }: {
     resourceType: ResourceType;
     requiredPermissions: number;
+    resourceIds?: Types.ObjectId[];
   }): Promise<Types.ObjectId[]> {
     try {
       if (typeof requiredPermissions !== 'number' || requiredPermissions < 1) {
@@ -234,7 +246,11 @@ export class AccessControlService {
 
       this.validateResourceType(resourceType);
 
-      return await this._dbMethods.findPublicResourceIds(resourceType, requiredPermissions);
+      return await this._dbMethods.findPublicResourceIds(
+        resourceType,
+        requiredPermissions,
+        resourceIds,
+      );
     } catch (error) {
       if (error instanceof Error) {
         logger.error(`[PermissionService.findPubliclyAccessibleResources] Error: ${error.message}`);

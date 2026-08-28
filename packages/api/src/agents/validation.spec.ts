@@ -1,9 +1,19 @@
 import {
+  EModelEndpoint,
   MAX_SUBAGENTS,
+  setMaxSubagents,
   MAX_SUBAGENT_GRAPH_NODES,
   MAX_GRAPH_SUBAGENT_MEMBERS,
+  Providers,
 } from 'librechat-data-provider';
-import { agentCreateSchema, agentUpdateSchema, agentSubagentsSchema } from './validation';
+import type { Agent } from 'librechat-data-provider';
+import type { Request, Response } from 'express';
+import {
+  agentCreateSchema,
+  agentUpdateSchema,
+  agentSubagentsSchema,
+  validateAgentModel,
+} from './validation';
 
 describe('agentSubagentsSchema', () => {
   const graph = {
@@ -46,6 +56,37 @@ describe('agentSubagentsSchema', () => {
       agent_ids: atCap,
     });
     expect(result.success).toBe(true);
+  });
+
+  it('accepts above the default cap when the configured limit is raised', () => {
+    setMaxSubagents(MAX_SUBAGENTS + 10);
+    const raised = Array.from({ length: MAX_SUBAGENTS + 5 }, (_, i) => `agent_${i}`);
+    const result = agentSubagentsSchema.safeParse({
+      enabled: true,
+      agent_ids: raised,
+    });
+    setMaxSubagents(undefined);
+    expect(result.success).toBe(true);
+  });
+
+  it('rejects above the raised cap and resets on invalid configured values', () => {
+    const oversized = Array.from({ length: MAX_SUBAGENTS + 11 }, (_, i) => `agent_${i}`);
+
+    setMaxSubagents(MAX_SUBAGENTS + 10);
+    const overRaised = agentSubagentsSchema.safeParse({
+      enabled: true,
+      agent_ids: oversized,
+    });
+
+    setMaxSubagents(MAX_SUBAGENTS + 100);
+    const afterInvalid = agentSubagentsSchema.safeParse({
+      enabled: true,
+      agent_ids: oversized,
+    });
+
+    setMaxSubagents(undefined);
+    expect(overRaised.success).toBe(false);
+    expect(afterInvalid.success).toBe(false);
   });
 
   it('accepts an explicit bounded graph subagent', () => {
@@ -309,5 +350,58 @@ describe('agentUpdateSchema with subagents', () => {
     expect(result.tool_resources).toEqual({
       execute_code: { file_ids: ['kept'] },
     });
+  });
+});
+
+describe('validateAgentModel', () => {
+  const request = {} as Request<unknown, unknown, unknown>;
+  const response = {} as Response;
+  const logViolation = jest.fn().mockResolvedValue(undefined);
+
+  beforeEach(() => {
+    logViolation.mockClear();
+  });
+
+  it('uses the Google catalog for a Vertex AI agent', async () => {
+    const result = await validateAgentModel({
+      req: request,
+      res: response,
+      agent: { provider: Providers.VERTEXAI, model: 'gemini-3.7-flash' } as Agent,
+      modelsConfig: { [EModelEndpoint.google]: ['gemini-3.7-flash'] },
+      logViolation,
+    });
+
+    expect(result).toEqual({ isValid: true });
+    expect(logViolation).not.toHaveBeenCalled();
+  });
+
+  it('uses an exact Vertex AI catalog when configured', async () => {
+    const result = await validateAgentModel({
+      req: request,
+      res: response,
+      agent: { provider: Providers.VERTEXAI, model: 'custom-vertex-model' } as Agent,
+      modelsConfig: {
+        [EModelEndpoint.google]: ['gemini-3.7-flash'],
+        [Providers.VERTEXAI]: ['custom-vertex-model'],
+      },
+      logViolation,
+    });
+
+    expect(result).toEqual({ isValid: true });
+    expect(logViolation).not.toHaveBeenCalled();
+  });
+
+  it('rejects a model absent from the shared Google catalog', async () => {
+    const result = await validateAgentModel({
+      req: request,
+      res: response,
+      agent: { provider: Providers.VERTEXAI, model: 'gemini-not-available' } as Agent,
+      modelsConfig: { [EModelEndpoint.google]: ['gemini-3.7-flash'] },
+      logViolation,
+    });
+
+    expect(result.isValid).toBe(false);
+    expect(result.error?.message).toContain('illegal_model_request');
+    expect(logViolation).toHaveBeenCalledTimes(1);
   });
 });

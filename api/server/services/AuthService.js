@@ -1,6 +1,6 @@
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
-const { webcrypto } = require('node:crypto');
+const { createHash, webcrypto } = require('node:crypto');
 const {
   logger,
   runAsSystem,
@@ -13,6 +13,7 @@ const { ErrorTypes, SystemRoles, errorsToString } = require('librechat-data-prov
 const {
   math,
   isEnabled,
+  storeOpenIdSession,
   checkEmailConfig,
   setCloudFrontCookies,
   getCloudFrontConfig,
@@ -33,6 +34,7 @@ const {
   deleteTokens,
   deleteSession,
   createSession,
+  upsertSession,
   generateToken,
   deleteUserById,
   generateRefreshToken,
@@ -943,10 +945,13 @@ const setOpenIDAuthTokens = (
       sameSite: 'strict',
     });
     if (userId && isEnabled(process.env.OPENID_REUSE_TOKENS)) {
-      /** JWT-signed user ID cookie for image path validation when OPENID_REUSE_TOKENS is enabled */
-      const signedUserId = jwt.sign({ id: userId }, process.env.JWT_REFRESH_SECRET, {
-        expiresIn: expiryInMilliseconds / 1000,
-      });
+      /** Bind image cookie identity to the durable refresh-token session. */
+      const refreshTokenHash = createHash('sha256').update(refreshToken).digest('base64url');
+      const signedUserId = jwt.sign(
+        { id: userId, refreshTokenHash },
+        process.env.JWT_REFRESH_SECRET,
+        { expiresIn: expiryInMilliseconds / 1000 },
+      );
       res.cookie('openid_user_id', signedUserId, {
         expires: expirationDate,
         httpOnly: true,
@@ -962,6 +967,14 @@ const setOpenIDAuthTokens = (
     logger.error('[setOpenIDAuthTokens] Error in setting authentication tokens:', error);
     throw error;
   }
+};
+
+/** Stores OpenID refresh-token state independently of the shorter Express session. */
+const storeOpenIDSession = async (userId, refreshToken, tenantId, previousRefreshToken) => {
+  return storeOpenIdSession(
+    { userId, refreshToken, tenantId, previousRefreshToken },
+    { upsertSession, deleteSession },
+  );
 };
 
 /**
@@ -1034,6 +1047,7 @@ module.exports = {
   setAuthTokens,
   resetPassword,
   setOpenIDAuthTokens,
+  storeOpenIDSession,
   setCloudFrontAuthCookies,
   requestPasswordReset,
   resendVerificationEmail,
