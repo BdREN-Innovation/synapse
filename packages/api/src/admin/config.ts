@@ -6,6 +6,9 @@ import {
   PrincipalModel,
   INTERFACE_PERMISSION_FIELDS,
   PERMISSION_SUB_KEYS,
+  hasProcessMCPServerConfig,
+  isProcessMCPServerConfig,
+  isProcessMCPServerField,
 } from 'librechat-data-provider';
 import type { AppConfig, ConfigSection, IConfig, SystemCapability } from '@librechat/data-schemas';
 import type { TCustomConfig } from 'librechat-data-provider';
@@ -31,6 +34,43 @@ const MAX_PATCH_ENTRIES = 100;
 const DEFAULT_PRIORITY = 10;
 const BASE_ONLY_OVERRIDE_SECTIONS = new Set<string>(BASE_ONLY_CONFIG_SECTIONS);
 const BASE_PRINCIPAL_OVERRIDE_SECTIONS = new Set<string>(BASE_PRINCIPAL_CONFIG_SECTIONS);
+const PROCESS_MCP_CONFIG_ERROR =
+  'Process-backed MCP servers can only be configured in librechat.yaml';
+const LANGFUSE_HEADERS_CONFIG_ERROR =
+  'Langfuse request headers can only be configured in librechat.yaml';
+
+/**
+ * Langfuse export headers carry proxy/gateway credentials, but they are a map
+ * of values rather than one scalar path, so the config secret registry cannot
+ * encrypt them at rest or mask them on read. Keeping them out of stored
+ * overrides is what makes them deployment-level: an admin-written map would sit
+ * in Mongo in plaintext and come back in plaintext, unlike `langfuse.secretKey`.
+ */
+function isLangfuseHeadersFieldPath(fieldPath: string): boolean {
+  return fieldPath === 'langfuse.headers' || fieldPath.startsWith('langfuse.headers.');
+}
+
+/**
+ * Whether an overrides payload carries Langfuse headers under any spelling.
+ *
+ * `overrides` is a Mixed document written wholesale, so a dotted property name
+ * survives verbatim: `{ langfuse: { "headers.X-Token": "..." } }` and
+ * `{ "langfuse.headers": {...} }` both persist a credential that the nested-map
+ * redactor never walks, and a later read returns it unchanged.
+ */
+function hasLangfuseHeadersOverride(rawOverrides: Record<string, unknown>): boolean {
+  for (const key of Object.keys(rawOverrides)) {
+    if (key === 'langfuse.headers' || key.startsWith('langfuse.headers.')) {
+      return true;
+    }
+  }
+
+  const rawLangfuse = rawOverrides.langfuse;
+  if (rawLangfuse == null || typeof rawLangfuse !== 'object' || Array.isArray(rawLangfuse)) {
+    return false;
+  }
+  return Object.keys(rawLangfuse).some((key) => key === 'headers' || key.startsWith('headers.'));
+}
 
 export function isValidFieldPath(path: string): boolean {
   return (
@@ -50,6 +90,19 @@ export function getTopLevelSection(fieldPath: string): string {
 
 function isBaseOnlyFieldPath(fieldPath: string): boolean {
   return BASE_ONLY_OVERRIDE_SECTIONS.has(getTopLevelSection(fieldPath));
+}
+
+function isProcessMCPServerFieldPath(fieldPath: string, value: unknown): boolean {
+  const [section, _serverName, field] = fieldPath.split('.');
+  if (section !== 'mcpServers' && section !== 'mcpConfig') {
+    return false;
+  }
+  if (field == null) {
+    return fieldPath === section
+      ? hasProcessMCPServerConfig(value)
+      : isProcessMCPServerConfig(value);
+  }
+  return isProcessMCPServerField(field) || (field === 'type' && value === 'stdio');
 }
 
 /**
@@ -501,6 +554,18 @@ export function createAdminConfigHandlers(deps: AdminConfigDeps): {
         return res.status(400).json({ error: 'overrides must be a plain object' });
       }
 
+      const rawOverrides = overrides as Record<string, unknown>;
+      if (
+        hasProcessMCPServerConfig(rawOverrides.mcpServers) ||
+        hasProcessMCPServerConfig(rawOverrides.mcpConfig)
+      ) {
+        return res.status(400).json({ error: PROCESS_MCP_CONFIG_ERROR });
+      }
+
+      if (hasLangfuseHeadersOverride(rawOverrides)) {
+        return res.status(400).json({ error: LANGFUSE_HEADERS_CONFIG_ERROR });
+      }
+
       if (priority != null && (typeof priority !== 'number' || priority < 0)) {
         return res.status(400).json({ error: 'priority must be a non-negative number' });
       }
@@ -702,6 +767,12 @@ export function createAdminConfigHandlers(deps: AdminConfigDeps): {
             .status(400)
             .json({ error: `Invalid or unsafe field path: ${entry.fieldPath}` });
         }
+        if (isProcessMCPServerFieldPath(entry.fieldPath, entry.value)) {
+          return res.status(400).json({ error: PROCESS_MCP_CONFIG_ERROR });
+        }
+        if (isLangfuseHeadersFieldPath(entry.fieldPath)) {
+          return res.status(400).json({ error: LANGFUSE_HEADERS_CONFIG_ERROR });
+        }
         if (isConfigSecretDescendantPath(entry.fieldPath)) {
           return res
             .status(400)
@@ -746,6 +817,10 @@ export function createAdminConfigHandlers(deps: AdminConfigDeps): {
       });
 
       const hasBroadManage = await hasConfigCapability(user, null, 'manage');
+
+      if (principalId === BASE_CONFIG_PRINCIPAL_ID && !hasBroadManage) {
+        return res.status(403).json({ error: 'Insufficient permissions' });
+      }
 
       if (validEntries.length === 0) {
         if (!hasBroadManage) {
@@ -858,6 +933,11 @@ export function createAdminConfigHandlers(deps: AdminConfigDeps): {
       const section = getTopLevelSection(fieldPath);
 
       const hasBroadManage = await hasConfigCapability(user, null, 'manage');
+
+      if (principalId === BASE_CONFIG_PRINCIPAL_ID && !hasBroadManage) {
+        return res.status(403).json({ error: 'Insufficient permissions' });
+      }
+
       if (
         !hasBroadManage &&
         !(await hasConfigCapability(user, section as ConfigSection, 'manage'))
@@ -956,7 +1036,16 @@ export function createAdminConfigHandlers(deps: AdminConfigDeps): {
 
       const section = getTopLevelSection(fieldPath);
 
-      if (!(await hasConfigCapability(user, section as ConfigSection, 'manage'))) {
+      const hasBroadManage = await hasConfigCapability(user, null, 'manage');
+
+      if (principalId === BASE_CONFIG_PRINCIPAL_ID && !hasBroadManage) {
+        return res.status(403).json({ error: 'Insufficient permissions' });
+      }
+
+      if (
+        !hasBroadManage &&
+        !(await hasConfigCapability(user, section as ConfigSection, 'manage'))
+      ) {
         return res.status(403).json({
           error: `Insufficient permissions for config section: ${section}`,
         });

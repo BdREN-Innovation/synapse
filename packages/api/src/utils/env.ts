@@ -142,7 +142,7 @@ export function createSafeUser(
  * List of allowed request body fields that can be used in header placeholders.
  * These are common fields from the request body that are safe to expose in headers.
  */
-const ALLOWED_BODY_FIELDS = ['conversationId', 'parentMessageId', 'messageId'] as const;
+export const ALLOWED_BODY_FIELDS = ['conversationId', 'parentMessageId', 'messageId'] as const;
 
 /**
  * Matches every placeholder this module knows how to resolve: the enumerated
@@ -170,7 +170,7 @@ const RESOLVABLE_PLACEHOLDER_PATTERN = new RegExp(
  * users under that one string). Only for final resolution passes — staged
  * flows that resolve again later with more context must not strip.
  */
-function stripUnresolvedPlaceholders(value: string): string {
+export function stripUnresolvedPlaceholders(value: string): string {
   return value.replace(RESOLVABLE_PLACEHOLDER_PATTERN, '');
 }
 

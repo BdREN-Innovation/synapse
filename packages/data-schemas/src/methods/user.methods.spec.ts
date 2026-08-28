@@ -2,8 +2,8 @@ import mongoose from 'mongoose';
 import { MongoMemoryServer } from 'mongodb-memory-server';
 import { AUTH_USER_DOC_BY_ID_PREFIX, CacheKeys } from 'librechat-data-provider';
 import type * as t from '~/types';
+import { createUserMethods, USER_DELETION_FENCE_STALE_MS } from './user';
 import balanceSchema from '~/schema/balance';
-import { createUserMethods } from './user';
 import userSchema from '~/schema/user';
 
 /** Mocking crypto for generateToken */
@@ -103,6 +103,27 @@ describe('User schema indexes', () => {
         openidIssuer: 'https://issuer-a.example.com',
       }),
     ).rejects.toThrow(/duplicate key/);
+  });
+});
+
+describe('User personalization', () => {
+  test('defaults new users to the shared user workspace', async () => {
+    const user = await User.create({
+      email: 'stateful-default@example.com',
+      provider: 'local',
+    });
+
+    expect(user.personalization?.statefulCodeEnvironment).toBe('user');
+  });
+
+  test('rejects unsupported stateful workspace defaults', async () => {
+    await expect(
+      User.create({
+        email: 'invalid-stateful-default@example.com',
+        provider: 'local',
+        personalization: { statefulCodeEnvironment: 'agent' },
+      }),
+    ).rejects.toThrow();
   });
 });
 
@@ -607,6 +628,85 @@ describe('User Methods - Database Tests', () => {
     });
   });
 
+  describe('agent trigger account-deletion fence', () => {
+    test('blocks trigger admission until the owning deletion attempt releases it', async () => {
+      const user = await User.create({
+        name: 'Trigger Fence',
+        email: 'trigger-fence@example.com',
+        provider: 'local',
+      });
+      const userId = user._id.toString();
+      const startedAt = new Date('2026-08-17T12:00:00.000Z');
+
+      await expect(methods.isAgentTriggerPrincipalActive(userId)).resolves.toBe(true);
+      await expect(methods.beginAgentTriggerUserDeletion(userId, startedAt)).resolves.toBe(
+        'acquired',
+      );
+      await expect(methods.isAgentTriggerPrincipalActive(userId)).resolves.toBe(false);
+      await expect(
+        methods.beginAgentTriggerUserDeletion(userId, new Date(startedAt.getTime() + 1)),
+      ).resolves.toBe('in_progress');
+      await expect(
+        methods.cancelAgentTriggerUserDeletion(userId, new Date(startedAt.getTime() + 1)),
+      ).resolves.toBe(false);
+      await expect(methods.cancelAgentTriggerUserDeletion(userId, startedAt)).resolves.toBe(true);
+      await expect(methods.isAgentTriggerPrincipalActive(userId)).resolves.toBe(true);
+    });
+
+    test('reports a missing principal without creating a deletion fence', async () => {
+      const userId = new mongoose.Types.ObjectId().toString();
+
+      await expect(methods.beginAgentTriggerUserDeletion(userId, new Date())).resolves.toBe(
+        'missing',
+      );
+      await expect(methods.isAgentTriggerPrincipalActive(userId)).resolves.toBe(false);
+    });
+
+    test('requires explicit stale-fence recovery and preserves successor ownership', async () => {
+      const user = await User.create({
+        name: 'Stale Trigger Fence',
+        email: 'stale-trigger-fence@example.com',
+        provider: 'local',
+      });
+      const userId = user._id.toString();
+      const abandonedAt = new Date('2026-08-17T12:00:00.000Z');
+      const takeoverAt = new Date(abandonedAt.getTime() + USER_DELETION_FENCE_STALE_MS + 1);
+
+      await expect(methods.beginAgentTriggerUserDeletion(userId, abandonedAt)).resolves.toBe(
+        'acquired',
+      );
+      await expect(methods.beginAgentTriggerUserDeletion(userId, takeoverAt)).resolves.toBe(
+        'in_progress',
+      );
+      await expect(
+        methods.recoverStaleAgentTriggerUserDeletion(
+          userId,
+          new Date(abandonedAt.getTime() + USER_DELETION_FENCE_STALE_MS - 1),
+        ),
+      ).resolves.toBe('in_progress');
+      await expect(methods.recoverStaleAgentTriggerUserDeletion(userId, takeoverAt)).resolves.toBe(
+        'acquired',
+      );
+      await expect(methods.cancelAgentTriggerUserDeletion(userId, abandonedAt)).resolves.toBe(
+        false,
+      );
+      await expect(methods.isAgentTriggerPrincipalActive(userId)).resolves.toBe(false);
+      await expect(methods.cancelAgentTriggerUserDeletion(userId, takeoverAt)).resolves.toBe(true);
+      await expect(methods.isAgentTriggerPrincipalActive(userId)).resolves.toBe(true);
+    });
+
+    test('rejects invalid deletion-fence timestamps', async () => {
+      const userId = new mongoose.Types.ObjectId().toString();
+
+      await expect(
+        methods.beginAgentTriggerUserDeletion(userId, new Date(Number.NaN)),
+      ).rejects.toThrow('startedAt must be a valid Date');
+      await expect(
+        methods.recoverStaleAgentTriggerUserDeletion(userId, new Date(Number.NaN)),
+      ).rejects.toThrow('recoveredAt must be a valid Date');
+    });
+  });
+
   describe('countUsers', () => {
     test('should count all users', async () => {
       await User.create([
@@ -823,6 +923,57 @@ describe('User Methods - Database Tests', () => {
       await methodsWithCache.toggleUserMemories(user._id?.toString() ?? '', false);
 
       expect(getCache).toHaveBeenCalledWith(CacheKeys.AUTH_USER_DOC);
+      expect(cache.get).toHaveBeenCalledWith(indexKey);
+      expect(cache.delete).toHaveBeenCalledWith('auth-cache-key-a');
+      expect(cache.delete).toHaveBeenCalledWith(indexKey);
+    });
+  });
+
+  describe('updateUserStatefulCodeEnvironment', () => {
+    test('updates the workspace default without changing memory preferences', async () => {
+      const user = await User.create({
+        email: 'stateful-preference@example.com',
+        provider: 'local',
+        personalization: { memories: false, statefulCodeEnvironment: 'user' },
+      });
+
+      const updated = await methods.updateUserStatefulCodeEnvironment(
+        user._id?.toString() ?? '',
+        'agent-user',
+      );
+
+      expect(updated?.personalization).toMatchObject({
+        memories: false,
+        statefulCodeEnvironment: 'agent-user',
+      });
+    });
+
+    test('returns null for a missing user', async () => {
+      const userId = new mongoose.Types.ObjectId().toString();
+
+      await expect(
+        methods.updateUserStatefulCodeEnvironment(userId, 'conversation'),
+      ).resolves.toBeNull();
+    });
+
+    test('invalidates cached auth user documents', async () => {
+      enableAuthUserDocCache();
+      const user = await User.create({
+        email: 'cached-stateful-preference@example.com',
+        provider: 'openid',
+      });
+      const userId = user._id?.toString() ?? '';
+      const indexKey = `${AUTH_USER_DOC_BY_ID_PREFIX}:${userId}`;
+      const cache = {
+        get: jest.fn().mockResolvedValue(['auth-cache-key-a']),
+        delete: jest.fn().mockResolvedValue(true),
+      };
+      const methodsWithCache = createUserMethods(mongoose, {
+        getCache: jest.fn().mockReturnValue(cache),
+      });
+
+      await methodsWithCache.updateUserStatefulCodeEnvironment(userId, 'conversation');
+
       expect(cache.get).toHaveBeenCalledWith(indexKey);
       expect(cache.delete).toHaveBeenCalledWith('auth-cache-key-a');
       expect(cache.delete).toHaveBeenCalledWith(indexKey);

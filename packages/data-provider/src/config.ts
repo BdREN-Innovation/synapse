@@ -9,13 +9,19 @@ import {
   eReasoningResponseKeySchema,
 } from './schemas';
 import { ComponentTypes, SettingTypes, OptionTypes } from './generate';
+import { STATEFUL_CODE_ENVIRONMENTS } from './stateful-code';
 import { specsConfigSchema, TSpecsConfig } from './models';
 import { REFILL_INTERVAL_UNITS } from './balance';
 import { fileConfigSchema } from './file-config';
 import { apiBaseUrl } from './api-endpoints';
 import { FileSources } from './types/files';
 import { MCPServersSchema } from './mcp';
-export { MAX_SUBAGENTS } from './limits';
+export {
+  MAX_SUBAGENTS,
+  MAX_GRAPH_SUBAGENT_MEMBERS,
+  MAX_CHAT_PROJECT_NAME_LENGTH,
+  MAX_CHAT_PROJECT_DESCRIPTION_LENGTH,
+} from './limits';
 
 export const defaultSocialLogins = ['google', 'facebook', 'openid', 'github', 'discord', 'saml'];
 
@@ -53,6 +59,7 @@ export const defaultRetrievalModels = [
 
 export const excludedKeys = new Set([
   'conversationId',
+  'subagentThread',
   'title',
   'iconURL',
   'greeting',
@@ -64,6 +71,8 @@ export const excludedKeys = new Set([
   'isTemporary',
   'messages',
   'isArchived',
+  'pinned',
+  'archivedAt',
   'tags',
   'user',
   '__v',
@@ -691,6 +700,22 @@ export const baseEndpointSchema = z.object({
   activityPhasePrompt: z.string().optional(),
   /** Cost cap: maximum phase summaries generated per run. Default 5. */
   activityPhaseMaxPerRun: z.number().int().positive().optional(),
+  /** Generates a live orientation label for sufficiently long top-level response reasoning. */
+  reasoningLabel: z.boolean().optional(),
+  /** Model used for reasoning labels. Defaults to activityModel, titleModel, then run model. */
+  reasoningLabelModel: z.string().optional(),
+  /** Endpoint receiving the bounded visible-reasoning snapshot. Defaults to activityEndpoint. */
+  reasoningLabelEndpoint: z.string().optional(),
+  /** Overrides the dedicated reasoning-label system prompt. */
+  reasoningLabelPrompt: z.string().optional(),
+  /** Characters required before the first reasoning label. Default 500. */
+  reasoningLabelMinChars: z.number().int().positive().optional(),
+  /** New characters required between streaming revisions. Default 400. */
+  reasoningLabelUpdateChars: z.number().int().positive().optional(),
+  /** Minimum milliseconds between streaming revisions. Default 3000. */
+  reasoningLabelUpdateIntervalMs: z.number().int().nonnegative().optional(),
+  /** Cost cap: maximum reasoning-label provider calls attempted per run. Default 8. */
+  reasoningLabelMaxPerRun: z.number().int().positive().optional(),
   /** Maximum characters allowed in a single tool result before truncation. */
   maxToolResultChars: z.number().positive().optional(),
 });
@@ -986,6 +1011,13 @@ export const agentsEndpointSchema = baseEndpointSchema
         .array(z.nativeEnum(AgentCapabilities))
         .optional()
         .default(defaultAgentCapabilities),
+      /** Controls which workspace-sharing scopes users may select for stateful code sessions.
+       *  Omit this block to preserve the legacy behavior of allowing every scope. */
+      statefulCodeSessions: z
+        .object({
+          allowedEnvironments: z.array(z.enum(STATEFUL_CODE_ENVIRONMENTS)).min(1),
+        })
+        .optional(),
       skills: z
         .object({
           maxCatalogSkills: z.number().int().min(1).max(100).optional(),
@@ -994,8 +1026,8 @@ export const agentsEndpointSchema = baseEndpointSchema
       remoteApi: remoteApiSchema.optional(),
       /** Human-in-the-loop tool approval policy. Off by default. */
       toolApproval: toolApprovalPolicySchema,
-      /** Durable checkpointer backing HITL resume. Defaults to the app's MongoDB
-       *  when `toolApproval.enabled` is set; ignored otherwise. */
+      /** Durable checkpointer backing tool-approval and Ask User resume.
+       *  Defaults to the app's MongoDB when either flow needs it. */
       checkpointer: checkpointerSchema,
     }),
   )
@@ -1141,6 +1173,14 @@ export const azureEndpointSchema = z
         activityPhaseEndpoint: true,
         activityPhasePrompt: true,
         activityPhaseMaxPerRun: true,
+        reasoningLabel: true,
+        reasoningLabelModel: true,
+        reasoningLabelEndpoint: true,
+        reasoningLabelPrompt: true,
+        reasoningLabelMinChars: true,
+        reasoningLabelUpdateChars: true,
+        reasoningLabelUpdateIntervalMs: true,
+        reasoningLabelMaxPerRun: true,
       })
       .partial(),
   );
@@ -1620,6 +1660,7 @@ export type TStartupConfig = {
   socialLogins?: string[];
   langfuseFanoutEnabled?: boolean;
   langfuseConnectionAccess?: boolean;
+  insightsEnabled?: boolean;
   interface?: TInterfaceConfig;
   turnstile?: TTurnstileConfig;
   balance?: TBalanceConfig;
@@ -2028,6 +2069,27 @@ export const langfuseConfigSchema = z.object({
   secretKeyPreview: z.string().optional(),
   /** Routing key for one of the deployment-configured tenant Langfuse destinations. */
   destination: z.string().optional(),
+  /**
+   * Custom request headers sent on every outbound Langfuse request — trace and
+   * media export, feedback scores, and credential verification — for
+   * self-hosted instances behind an authenticating proxy or gateway. Values
+   * support `${ENV_VAR}` interpolation.
+   *
+   * Deployment-level only. Trace export batches spans from every user through
+   * one exporter, so unlike endpoint headers these cannot carry per-user
+   * placeholders. Headers referencing an unset variable, naming an
+   * infrastructure secret, or carrying an invalid HTTP field name are dropped
+   * with a warning rather than sent.
+   *
+   * Sent only when the deployment configures exactly one Langfuse origin, and
+   * only to that origin. The map cannot say which endpoint it authenticates
+   * to, so with several configured origins any choice of recipient would risk
+   * disclosing a gateway credential to the others; a warning is logged instead.
+   * Multi-destination deployments need per-destination headers, which this
+   * schema does not yet express — and note the fanout collector forwards only
+   * `Authorization` upstream regardless.
+   */
+  headers: z.record(z.string()).optional(),
 });
 
 export type LangfuseConfig = z.infer<typeof langfuseConfigSchema>;
@@ -2299,6 +2361,8 @@ export const defaultModels = {
   [EModelEndpoint.assistants]: [...sharedOpenAIModels, 'chatgpt-4o-latest'],
   [EModelEndpoint.agents]: sharedOpenAIModels, // TODO: Add agent models (agentsModels)
   [EModelEndpoint.google]: [
+    // Gemini 3.7 Models
+    'gemini-3.7-flash',
     // Gemini 3.6 Models
     'gemini-3.6-flash',
     // Gemini 3.5 Models
@@ -2719,6 +2783,10 @@ export enum ErrorTypes {
    */
   RESOURCE_RECOVERY_REQUIRED = 'resource_recovery_required',
   /**
+   * Agent selected a stateful Code API workspace scope disabled by the deployment.
+   */
+  STATEFUL_CODE_ENVIRONMENT_NOT_ALLOWED = 'stateful_code_environment_not_allowed',
+  /**
    * Invalid Agent Provider (excluded by Admin)
    */
   INVALID_AGENT_PROVIDER = 'invalid_agent_provider',
@@ -2888,7 +2956,7 @@ export enum Constants {
    */
   VERSION = '__LIBRECHAT_VERSION__',
   /** Key for the Custom Config's version (librechat.yaml). */
-  CONFIG_VERSION = '1.3.13',
+  CONFIG_VERSION = '1.3.14',
   /** Standard value for the first message's `parentMessageId` value, to indicate no parent exists. */
   NO_PARENT = '00000000-0000-0000-0000-000000000000',
   /** Standard value to use whatever the submission prelim. `responseMessageId` is */

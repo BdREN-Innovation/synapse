@@ -30,6 +30,7 @@ export * from './prompts';
 /* Skills */
 export * from './skill';
 export * from './skillSync';
+export * from './triggerDelivery';
 /* Access Control */
 export * from './accessRole';
 export * from './aclEntry';
